@@ -111,7 +111,10 @@ async def run_extraction(image_path: Path, page_type_hint: Optional[str]) -> dic
     for attempt in range(4):
         try:
             result = await extract_registry_from_image(image_path.read_bytes(), mime_type, page_type_hint)
-            return {'page_type': result.page_type, 'page_confidence': result.page_confidence, 'champs': result.fields}
+            return {
+                'page_type': result.page_type, 'page_confidence': result.page_confidence,
+                'modeles': result.model_names, 'champs': result.fields,
+            }
         except extraction_error as failure:
             is_rate_limited = '429' in str(failure) or 'RESOURCE_EXHAUSTED' in str(failure)
             if not is_rate_limited or attempt == 3:
@@ -139,7 +142,7 @@ def percent(numerator: int, denominator: int) -> str:
     return f'{100 * numerator / denominator:.1f} %' if denominator else '—'
 
 
-def build_report(run_name: str, results: list[dict], page_type_results: list[tuple[str, Optional[str]]]) -> str:
+def build_report(run_name: str, results: list[dict], page_type_results: list[tuple[str, Optional[str]]], models_used: dict[str, int]) -> str:
     by_page_type: dict[str, list[dict]] = defaultdict(list)
     for item in results:
         by_page_type[item['page_type']].append(item)
@@ -153,8 +156,11 @@ def build_report(run_name: str, results: list[dict], page_type_results: list[tup
             f"| {sum(i['hallucination'] for i in items)} |"
         )
 
+    models_text = ', '.join(f'{name} ({count} appels)' for name, count in models_used.items()) or 'inconnu (réponses en cache anciennes)'
     lines = [
         f'# Évaluation de l’extraction — {run_name}',
+        '',
+        f'Modèles qui ont répondu : {models_text}',
         '',
         '| Type de page | Champs | Exactitude par champ | Exactitude (champs remplis) | Statut correct | Valeurs inventées |',
         '|---|---|---|---|---|---|',
@@ -210,6 +216,7 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict] = []
     page_type_results: list[tuple[str, Optional[str]]] = []
+    models_used: dict[str, int] = defaultdict(int)
 
     for page_number in parse_pages(args.pages):
         truth = truth_by_page[str(page_number)]
@@ -222,6 +229,10 @@ def main() -> None:
             }}
         elif cache_path.exists() and not args.refresh:
             prediction = json.loads(cache_path.read_text(encoding='utf-8'))
+            # Les corrections du backend évoluent : on les réapplique sur le cache (gratuit, aucun appel Gemini)
+            if 'champs' in prediction and prediction.get('page_type') in pages_by_type:
+                from app.services.gemini_extractor import post_process_fields
+                prediction['champs'] = post_process_fields(prediction['page_type'], prediction['champs'])
         else:
             image_path = find_page_image(args.images, page_number)
             if image_path is None:
@@ -239,6 +250,8 @@ def main() -> None:
             continue
         if not args.known_page_type:
             page_type_results.append((truth['page_type'], prediction.get('page_type')))
+        for model_name in prediction.get('modeles', []):
+            models_used[model_name] += 1
 
         # Si l'IA s'est trompée de type de page, tous les champs attendus comptent comme manqués
         predicted_fields = prediction['champs'] if prediction.get('page_type') == truth['page_type'] else {}
@@ -253,7 +266,7 @@ def main() -> None:
 
     if not results:
         sys.exit('Aucun résultat à évaluer.')
-    report = build_report(args.run_name, results, page_type_results)
+    report = build_report(args.run_name, results, page_type_results, dict(models_used))
     (run_dir / 'rapport.md').write_text(report, encoding='utf-8')
     print(report)
     print(f'Rapport écrit dans {run_dir / "rapport.md"}')

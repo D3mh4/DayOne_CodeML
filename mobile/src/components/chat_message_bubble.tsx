@@ -3,6 +3,7 @@ import { View, Text, Image, TouchableOpacity } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   chat_message,
+  quick_reply,
   record_status,
   field_status,
   doubtful_field_statuses,
@@ -13,6 +14,7 @@ interface chat_message_bubble_props {
   on_confirm_record?: (record_id: string) => void;
   on_correct_record?: (record_id: string) => void;
   on_retake_record?: (record_id: string) => void;
+  on_quick_reply?: (reply: quick_reply) => void;
 }
 
 type status_tone = 'neutral' | 'waiting' | 'alert' | 'success';
@@ -57,6 +59,7 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
   on_confirm_record,
   on_correct_record,
   on_retake_record,
+  on_quick_reply,
 }) => {
   const is_user_message = message.sender_type === 'user';
   const [is_expanded, set_is_expanded] = useState<boolean>(false);
@@ -169,6 +172,22 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
           )}
         </View>
       </View>
+
+      {/* Réponses rapides à une question de suivi */}
+      {message.quick_replies && message.quick_replies.length > 0 && (
+        <View className="max-w-[85%] w-full mt-0.5">
+          {message.quick_replies.map((reply) => (
+            <TouchableOpacity
+              key={reply.value}
+              onPress={() => on_quick_reply?.(reply)}
+              className="bg-whatsapp_incoming rounded-lg py-2.5 px-3 mt-0.5 items-center"
+              activeOpacity={0.7}
+            >
+              <Text className="text-[#027EB5] text-[15px] font-medium text-center">{reply.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
 
       {/* Boutons de réponse rapide sous la bulle, comme les messages interactifs WhatsApp */}
       {show_actions && (

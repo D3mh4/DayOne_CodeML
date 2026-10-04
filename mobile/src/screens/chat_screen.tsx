@@ -42,6 +42,8 @@ interface pending_field_question {
 
 // Réponses qui confirment la valeur lue par l'IA au lieu de la remplacer
 const confirmation_answers = ['ok', 'oui', 'yes', 'correct', 'c bon', 'cest bon', "c'est bon"];
+// Réponse rapide « illisible aussi sur le papier » : le champ devient « inconnu », confirmé par la sage-femme
+const illegible_reply_value = '__illisible__';
 
 const format_time = (date_obj: Date = new Date()) =>
   `${String(date_obj.getHours()).padStart(2, '0')}:${String(date_obj.getMinutes()).padStart(2, '0')}`;
@@ -181,16 +183,21 @@ export const ChatScreen: React.FC = () => {
 
     const question_text =
       field_val?.statut === 'illisible' || read_value === null
-        ? `❓ Je n’arrive pas à lire « ${field_label} ». Pouvez-vous taper la valeur écrite sur le registre ?`
+        ? `❓ Je n’arrive pas à lire « ${field_label} ». Tapez la valeur écrite sur le registre.`
         : field_val?.raison
-        ? `🤔 Pour « ${field_label} » j’ai lu « ${read_value} », mais ${field_val.raison}. Tapez la bonne valeur, ou « ok » si c’est correct.`
-        : `🤔 Pour « ${field_label} » j’ai lu « ${read_value} », mais je n’en suis sûr qu’à ${confidence_pct} %. Tapez la bonne valeur, ou « ok » si c’est correct.`;
+        ? `🤔 Pour « ${field_label} » j’ai lu « ${read_value} », mais ${field_val.raison}. Confirmez, ou tapez la bonne valeur.`
+        : `🤔 Pour « ${field_label} » j’ai lu « ${read_value} », mais je n’en suis sûr qu’à ${confidence_pct} %. Confirmez, ou tapez la bonne valeur.`;
+
+    const quick_replies = [
+      ...(read_value !== null ? [{ label: `✓ « ${read_value} » est correct`, value: 'ok' }] : []),
+      { label: 'Illisible aussi sur le registre', value: illegible_reply_value },
+    ];
 
     const remaining_suffix =
       remaining_fields.length > 1 ? `\n(${remaining_fields.length - 1} autre(s) champ(s) à vérifier ensuite)` : '';
 
     set_active_question({ record_id, field_key, field_label, read_value });
-    append_messages(build_message('assistant', { message_text: question_text + remaining_suffix }));
+    append_messages(build_message('assistant', { message_text: question_text + remaining_suffix, quick_replies }));
   };
 
   const show_sync_success = (sync_res: sync_result_item) => {
@@ -301,8 +308,10 @@ export const ChatScreen: React.FC = () => {
   }, []);
 
   // Réponse texte de la sage-femme
-  const handle_send_message = async (text_content: string) => {
-    append_messages(build_message('user', { message_text: text_content }));
+  const handle_send_message = async (text_content: string, display_text?: string) => {
+    // Les boutons de réponse rapide ne servent qu'une fois : on les retire dès qu'une réponse arrive
+    set_messages_list((prev) => prev.map((msg) => (msg.quick_replies ? { ...msg, quick_replies: undefined } : msg)));
+    append_messages(build_message('user', { message_text: display_text ?? text_content }));
 
     if (!active_question) return;
 
@@ -316,9 +325,18 @@ export const ChatScreen: React.FC = () => {
       const trimmed_answer = text_content.trim();
       const is_confirmation =
         read_value !== null && confirmation_answers.includes(trimmed_answer.toLowerCase());
-      const final_value = is_confirmation ? read_value : trimmed_answer;
+      const is_illegible_on_paper = trimmed_answer === illegible_reply_value;
+      const final_value = is_illegible_on_paper ? null : is_confirmation ? read_value : trimmed_answer;
 
-      current_data[field_key] = { ...current_data[field_key], valeur: final_value, confiance: 1.0, statut: 'connu', raison: null };
+      current_data[field_key] = is_illegible_on_paper
+        ? {
+            ...current_data[field_key],
+            valeur: null,
+            confiance: 1.0,
+            statut: 'inconnu',
+            raison: 'Illisible aussi sur le registre papier (confirmé par la sage-femme)',
+          }
+        : { ...current_data[field_key], valeur: final_value, confiance: 1.0, statut: 'connu', raison: null };
 
       const next_status = status_after_extraction(current_data);
       await update_record_status_and_data(record_id, next_status, current_data);
@@ -332,7 +350,9 @@ export const ChatScreen: React.FC = () => {
 
       append_messages(
         build_message('assistant', {
-          message_text: `👍 « ${field_label} » = « ${final_value} » enregistré.`,
+          message_text: is_illegible_on_paper
+            ? `👍 « ${field_label} » noté comme inconnu (illisible sur le registre).`
+            : `👍 « ${field_label} » = « ${final_value} » enregistré.`,
         })
       );
       ask_next_doubtful_field(record_id, current_data);
@@ -504,6 +524,7 @@ export const ChatScreen: React.FC = () => {
               on_confirm_record={handle_confirm_record}
               on_correct_record={handle_correct_record}
               on_retake_record={handle_retake_record}
+              on_quick_reply={(reply) => handle_send_message(reply.value, reply.label)}
             />
           )}
           contentContainerStyle={{ paddingVertical: 12 }}

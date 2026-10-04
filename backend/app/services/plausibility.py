@@ -107,3 +107,61 @@ def apply_plausibility_rules(page_type: str, flat_fields: dict[str, dict]) -> di
                 field_val['raison'] = reason
                 break
     return flat_fields
+
+
+# -- cohérence entre champs -------------------------------------------------------------------------
+# La confiance auto-déclarée par Gemini est presque toujours ~0.99, juste ou faux : elle ne repère pas les erreurs.
+# Ces contrôles croisés, eux, attrapent une date ou un chiffre mal lu (ex. 31/01 lu 31/07).
+
+def _parse_date(raw_value) -> Optional[date]:
+    match = date_pattern.match(str(raw_value or ''))
+    if not match:
+        return None
+    day, month, year = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    try:
+        return date(year + 2000 if year < 100 else year, month, day)
+    except ValueError:
+        return None
+
+
+def _known(flat_fields: dict[str, dict], key: str):
+    field_val = flat_fields.get(key)
+    return field_val.get('valeur') if field_val and field_val.get('statut') == 'connu' else None
+
+
+def _flag(flat_fields: dict[str, dict], key: str, reason: str) -> None:
+    field_val = flat_fields.get(key)
+    if field_val and field_val.get('statut') == 'connu':
+        field_val['statut'] = 'a_reviser'
+        field_val['confiance'] = min(field_val.get('confiance', 1.0), 0.5)
+        field_val['raison'] = reason
+
+
+def apply_consistency_rules(page_type: str, flat_fields: dict[str, dict]) -> dict[str, dict]:
+    if page_type == 'p2_identification_antecedents':
+        gestite, parite = _first_number(str(_known(flat_fields, 'gestite') or '')), _first_number(str(_known(flat_fields, 'parite') or ''))
+        if gestite is not None and parite is not None and parite > gestite:
+            _flag(flat_fields, 'parite', f'la parité ({parite:g}) dépasse la gestité ({gestite:g})')
+
+    if page_type == 'p3_grossesse_actuelle':
+        last_period = _parse_date(_known(flat_fields, 'ddr'))
+        due_date = _parse_date(_known(flat_fields, 'date_prevue_accouchement'))
+        overdue_date = _parse_date(_known(flat_fields, 'date_depassement_terme'))
+        if last_period and due_date and abs((due_date - last_period).days - 280) > 10:
+            _flag(flat_fields, 'date_prevue_accouchement', f'elle devrait tomber environ 280 jours après la DDR ({last_period:%d/%m/%Y})')
+        if due_date and overdue_date and abs((overdue_date - due_date).days - 7) > 4:
+            _flag(flat_fields, 'date_depassement_terme', 'elle devrait tomber environ 7 jours après la date prévue d’accouchement')
+        if last_period:
+            for key in [k for k in flat_fields if k.startswith('visites.') and k.endswith('.venue_le')]:
+                visit_date = _parse_date(_known(flat_fields, key))
+                weeks_key = key.replace('.venue_le', '.age_probable')
+                weeks = _first_number(str(_known(flat_fields, weeks_key) or ''))
+                if visit_date and weeks is not None:
+                    expected_weeks = (visit_date - last_period).days / 7
+                    if abs(expected_weeks - weeks) > 3:
+                        _flag(flat_fields, weeks_key, f'{weeks:g} SA ne correspond pas à la visite du {visit_date:%d/%m/%Y} (≈ {expected_weeks:.0f} SA d’après la DDR)')
+
+    if page_type == 'p4_accouchement':
+        if _known(flat_fields, 'presence_complications') == 'non' and _known(flat_fields, 'types_complications'):
+            _flag(flat_fields, 'presence_complications', 'des types de complications sont cochés plus bas')
+    return flat_fields

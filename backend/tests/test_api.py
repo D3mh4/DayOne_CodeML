@@ -133,12 +133,13 @@ def test_auto_mode_falls_back_to_groq_then_reports_errors(monkeypatch):
         raise extraction_error('Gemini indisponible — 503')
 
     async def groq_ok(_image, _mime, _prompt, response_model):
-        return response_model(page_type='p1_couverture', confiance=0.9)
+        return response_model(page_type='p1_couverture', confiance=0.9), 'groq/test'
 
     monkeypatch.setattr(gemini_extractor, '_gemini_json', gemini_down)
     monkeypatch.setattr(gemini_extractor, '_groq_json', groq_ok)
-    result = asyncio.run(gemini_extractor._generate_json(b'x', 'image/png', 'prompt', gemini_extractor.page_classification))
+    result, model_name = asyncio.run(gemini_extractor._generate_json(b'x', 'image/png', 'prompt', gemini_extractor.page_classification))
     assert result.page_type == 'p1_couverture'
+    assert model_name == 'groq/test'
 
     async def groq_down(*_args):
         raise extraction_error('Groq indisponible — 401')

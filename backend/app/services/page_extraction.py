@@ -32,7 +32,10 @@ class page_classification(BaseModel):
 def _field_description(spec: field_spec) -> str:
     parts = [spec.label]
     if spec.kind == 'bool':
-        parts.append("Case à cocher : valeur « oui » si la case est cochée, « non » si elle est vide (statut connu).")
+        parts.append(
+            "Case à cocher : valeur exactement « oui » si la case est cochée, « non » si elle est vide (statut connu). "
+            "Ne recopie pas le libellé de la case."
+        )
     elif spec.kind == 'choice':
         parts.append(f"Une seule case cochée parmi : {' | '.join(spec.options)}. Valeur = texte exact de l'option, null si aucune.")
     elif spec.kind == 'multi':
@@ -96,6 +99,75 @@ def flatten_extraction(page_type: str, extraction: BaseModel) -> dict[str, dict]
     return flat
 
 
+_truthy_answers = {'oui', 'yes', 'x', 'true', 'vrai', 'coche', 'cochee', '1', 'checked'}
+_falsy_answers = {'non', 'no', 'false', 'faux', '0', 'vide', 'noncoche', 'noncochee', 'unchecked'}
+_doubt_statuses = {'illisible', 'a_reviser'}
+
+
+def _norm(raw_value: str) -> str:
+    """Comparaison tolérante : minuscules, sans accents, sans ponctuation (le « + » est gardé)."""
+    import re
+    import unicodedata
+    text_val = unicodedata.normalize('NFKD', raw_value.replace('œ', 'oe'))
+    text_val = ''.join(char for char in text_val if not unicodedata.combining(char))
+    return re.sub(r'[^a-z0-9+]', '', text_val.lower())
+
+
+def _match_option(answer: str, options: tuple[str, ...]) -> Optional[str]:
+    answer_norm = _norm(answer)
+    if not answer_norm:
+        return None
+    for option in options:
+        if _norm(option) == answer_norm:
+            return option
+    # « Programmée » pour « Césarienne : Programmée », « sanglante » pour « sanglantes »...
+    candidates = [option for option in options if answer_norm in _norm(option) or _norm(option) in answer_norm]
+    return min(candidates, key=lambda option: abs(len(_norm(option)) - len(answer_norm))) if candidates else None
+
+
+def normalize_checkbox_fields(page_type: str, flat_fields: dict[str, dict]) -> dict[str, dict]:
+    """
+    Remet les cases à cocher au format attendu. Gemini renvoie parfois le libellé de la case (« Présence du globe
+    utérin »), un « X », ou null pour une case vide, au lieu de « oui »/« non » ; et des virgules au lieu de « ; ».
+    Une réponse impossible à interpréter passe en 'a_reviser' (l'agent pose la question) au lieu d'être devinée.
+    """
+    import re
+
+    for field_item in pages_by_type[page_type].fields:
+        field_val = flat_fields.get(field_item.key)
+        if not field_val or field_item.kind == 'text' or field_val.get('statut') in _doubt_statuses:
+            continue
+        raw_value = str(field_val['valeur']).strip() if field_val.get('valeur') is not None else ''
+
+        if field_item.kind == 'bool':
+            answer_norm = _norm(raw_value)
+            if answer_norm in _truthy_answers or answer_norm == _norm(field_item.printed_anchor) or answer_norm == _norm(field_item.label):
+                field_val.update(valeur='oui', statut='connu')
+            elif answer_norm in _falsy_answers or not raw_value:
+                # Case vide = « non » : c'est une information, pas un champ manquant
+                field_val.update(valeur='non', statut='connu')
+            else:
+                field_val.update(statut='a_reviser', raison=f'réponse « {raw_value} » inattendue pour une case à cocher')
+            continue
+
+        # choice / multi : chaque morceau doit correspondre à une option imprimée
+        parts = [part for part in re.split(r'[;,/\n]+', raw_value) if part.strip()]
+        if not parts:
+            field_val.update(valeur=None, statut='non_fourni')
+            continue
+        matched = [_match_option(part, field_item.options) for part in parts]
+        if any(option is None for option in matched):
+            unknown = ', '.join(part.strip() for part, option in zip(parts, matched) if option is None)
+            field_val.update(statut='a_reviser', raison=f'option « {unknown} » absente du formulaire')
+            continue
+        ordered = [option for option in field_item.options if option in matched]
+        if field_item.kind == 'choice' and len(ordered) > 1:
+            field_val.update(valeur=' ; '.join(ordered), statut='a_reviser', raison='plusieurs cases cochées pour un choix unique')
+        else:
+            field_val.update(valeur=' ; '.join(ordered), statut='connu')
+    return flat_fields
+
+
 def classification_prompt() -> str:
     page_list = '\n'.join(
         f"- {page_item.page_type} : titre « {page_item.title} »"
@@ -147,5 +219,5 @@ def describe_page(page_type: str) -> tuple[str, str]:
 
 __all__ = [
     'extracted_value', 'page_classification', 'response_model_for', 'flatten_extraction',
-    'classification_prompt', 'extraction_prompt', 'empty_flat_fields', 'describe_page', 'table_spec',
+    'classification_prompt', 'extraction_prompt', 'empty_flat_fields', 'describe_page', 'normalize_checkbox_fields',
 ]

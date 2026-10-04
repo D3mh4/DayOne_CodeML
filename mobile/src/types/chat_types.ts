@@ -57,6 +57,11 @@ export interface extracted_record_data {
   [cle: string]: extracted_field_value | undefined;
 }
 
+export interface quick_reply {
+  label: string; // texte du bouton (et de la bulle envoyée)
+  value: string; // valeur réellement traitée
+}
+
 export interface chat_message {
   message_id: string;
   sender_type: message_sender_type;
@@ -67,6 +72,8 @@ export interface chat_message {
   patient_id?: string;
   record_status?: record_status;
   extracted_data?: extracted_record_data;
+  // Boutons de réponse rapide sous un message (comme les réponses rapides WhatsApp)
+  quick_replies?: quick_reply[];
   created_at: string;
   is_sent: boolean;
   is_delivered: boolean;

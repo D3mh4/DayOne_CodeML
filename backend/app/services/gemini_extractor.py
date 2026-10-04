@@ -1,7 +1,7 @@
 import base64
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from pydantic import BaseModel
@@ -12,10 +12,11 @@ from app.services.page_extraction import (
     empty_flat_fields,
     extraction_prompt,
     flatten_extraction,
+    normalize_checkbox_fields,
     page_classification,
     response_model_for,
 )
-from app.services.plausibility import apply_plausibility_rules
+from app.services.plausibility import apply_consistency_rules, apply_plausibility_rules
 
 logger = logging.getLogger('gemini_extractor')
 logger.setLevel(logging.INFO)
@@ -34,6 +35,8 @@ class page_extraction_result:
     page_type: str
     page_confidence: float
     fields: dict[str, dict]  # {clé aplatie: {valeur, confiance, statut, label, raison?}}
+    # Modèles qui ont réellement répondu (si le modèle configuré est saturé, un autre de la liste a pu répondre)
+    model_names: list[str] = field(default_factory=list)
 
 
 def _is_real_key(api_key: str) -> bool:
@@ -89,12 +92,12 @@ def extract_with_simulated_fallback() -> page_extraction_result:
     }
     for key, (value, confidence, status) in simulated_values.items():
         fields[key].update({'valeur': value, 'confiance': confidence, 'statut': status})
-    return page_extraction_result('p4_accouchement', 1.0, apply_plausibility_rules('p4_accouchement', fields))
+    return page_extraction_result('p4_accouchement', 1.0, apply_plausibility_rules('p4_accouchement', fields), ['simulation'])
 
 
 # -- fournisseurs ---------------------------------------------------------------------------------
 
-async def _gemini_json(image_bytes: bytes, image_mime_type: str, prompt: str, response_model: type[BaseModel]) -> BaseModel:
+async def _gemini_json(image_bytes: bytes, image_mime_type: str, prompt: str, response_model: type[BaseModel]) -> tuple[BaseModel, str]:
     try:
         from google import genai
         from google.genai import types
@@ -120,14 +123,17 @@ async def _gemini_json(image_bytes: bytes, image_mime_type: str, prompt: str, re
             )
             if not response_result.text:
                 raise ValueError('réponse vide')
-            return response_model.model_validate_json(response_result.text)
+            parsed = response_model.model_validate_json(response_result.text)
+            if model_name != settings.gemini_model_name:
+                logger.info(f"Réponse obtenue avec le modèle de secours {model_name}")
+            return parsed, model_name
         except Exception as model_error:
             logger.warning(f"Échec Gemini {model_name} : {model_error}")
             failures.append(f'{model_name}: {model_error}')
     raise extraction_error('Gemini indisponible — ' + ' | '.join(failures))
 
 
-async def _groq_json(image_bytes: bytes, image_mime_type: str, prompt: str, response_model: type[BaseModel]) -> BaseModel:
+async def _groq_json(image_bytes: bytes, image_mime_type: str, prompt: str, response_model: type[BaseModel]) -> tuple[BaseModel, str]:
     """Groq ne garantit pas le schéma : on le donne dans la consigne puis on valide avec Pydantic."""
     import httpx
 
@@ -153,12 +159,12 @@ async def _groq_json(image_bytes: bytes, image_mime_type: str, prompt: str, resp
             )
             groq_response.raise_for_status()
             generated_content = groq_response.json()['choices'][0]['message']['content']
-        return response_model.model_validate_json(generated_content)
+        return response_model.model_validate_json(generated_content), f'groq/{settings.groq_model_name}'
     except Exception as groq_error:
         raise extraction_error(f'Groq indisponible — {groq_error}') from groq_error
 
 
-async def _generate_json(image_bytes: bytes, image_mime_type: str, prompt: str, response_model: type[BaseModel]) -> BaseModel:
+async def _generate_json(image_bytes: bytes, image_mime_type: str, prompt: str, response_model: type[BaseModel]) -> tuple[BaseModel, str]:
     """Essaie les fournisseurs configurés dans l'ordre (auto = Gemini puis Groq). Aucun repli sur des données factices."""
     provider_name = settings.extraction_provider
     providers = []
@@ -187,15 +193,26 @@ async def extract_registry_from_image(
     1. Reconnaît le type de page (sauf si page_type_hint est fourni), 2. extrait les champs de ce type de page,
     3. applique les règles de vraisemblance. Lève extraction_error en cas d'échec (jamais de données inventées).
     """
+    model_names: list[str] = []
     if page_type_hint:
         page_type, page_confidence = page_type_hint, 1.0
     else:
-        classification = await _generate_json(image_bytes, image_mime_type, classification_prompt(), page_classification)
+        classification, classification_model = await _generate_json(image_bytes, image_mime_type, classification_prompt(), page_classification)
+        model_names.append(classification_model)
         page_type, page_confidence = classification.page_type, classification.confiance
         logger.info(f"Page reconnue : {page_type} (confiance {page_confidence:.2f})")
         if page_type == 'inconnue':
             raise extraction_error("La photo ne ressemble à aucune page du registre. Reprenez la photo.")
 
-    extraction = await _generate_json(image_bytes, image_mime_type, extraction_prompt(page_type), response_model_for(page_type))
-    fields = apply_plausibility_rules(page_type, flatten_extraction(page_type, extraction))
-    return page_extraction_result(page_type, page_confidence, fields)
+    extraction, extraction_model = await _generate_json(image_bytes, image_mime_type, extraction_prompt(page_type), response_model_for(page_type))
+    model_names.append(extraction_model)
+
+    fields = post_process_fields(page_type, flatten_extraction(page_type, extraction))
+    return page_extraction_result(page_type, page_confidence, fields, list(dict.fromkeys(model_names)))
+
+
+def post_process_fields(page_type: str, fields: dict[str, dict]) -> dict[str, dict]:
+    """Format des cases à cocher, puis doutes (valeurs invraisemblables, incohérences entre champs). Idempotent."""
+    fields = normalize_checkbox_fields(page_type, fields)
+    fields = apply_plausibility_rules(page_type, fields)
+    return apply_consistency_rules(page_type, fields)
