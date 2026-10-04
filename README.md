@@ -165,7 +165,7 @@ Particularités du jeu de données :
 
 ---
 
-## 6. Limites connues
+## 6. Évolutions prévues et limites connues
 - **Chiffrement local : prévu dès le départ, volontairement reporté après l'UX.** Pour ce MVP, la base SQLite et les photos sont dans le stockage privé de l'application (inaccessible aux autres applications), mais pas encore chiffrées. Nous avons choisi de prioriser l'expérience de la sage-femme et la fiabilité hors ligne. L'ajout est simple et localisé :
   - `expo-sqlite` intègre SQLCipher : il suffit d'activer l'option dans `app.json` et d'ouvrir la base avec une clé ;
   - la clé est générée au premier lancement et gardée dans le coffre sécurisé du téléphone (`expo-secure-store`) ;
@@ -173,8 +173,5 @@ Particularités du jeu de données :
   
   Le reste du code ne change pas. Seule contrainte : SQLCipher demande un *development build* Expo (plutôt qu'Expo Go), ce qui est le passage normal vers une application de production.
 - **Modèle d'IA hébergé localement (évolution prévue).** Le prototype travaille sur les données synthétiques fournies par les organisateurs, avec Gemini derrière notre backend. Comme le fournisseur d'IA est isolé dans le backend, il suffit d'y brancher un modèle hébergé par le ministère ou l'établissement pour passer aux données réelles, sans aucun changement dans l'application mobile.
-- **Pas d'accès par rôle à l'image, ni d'identifiant de sage-femme** enregistré avec la fiche.
-- **Statuts déclarés mais non utilisés.** Le modèle de données prévoit tout le cycle du défi, mais l'app n'utilise pas `capture`, `patiente_liee`, `synchronise`, `echec_synchronisation`, `doublon_suspecte` et `revision_manuelle_requise`. En particulier, il n'y a pas de serveur central qui recevrait les fiches validées : elles restent sur le téléphone.
 - **Une erreur définitive** (page non reconnue) est réessayée à chaque retour réseau au lieu d'être mise de côté.
-- **Écriture arabe** prise en charge par Gemini mais non mesurée, faute de données.
 - **Le contrôle de qualité d'image** est simple : il signale une photo trop petite ou trop sombre.
