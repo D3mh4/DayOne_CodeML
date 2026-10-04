@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, FlatList, KeyboardAvoidingView, Platform, Alert, StatusBar } from 'react-native';
+import { View, FlatList, KeyboardAvoidingView, Keyboard, Platform, Alert, StatusBar } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChatHeader } from '../components/chat_header';
 import { ChatMessageBubble } from '../components/chat_message_bubble';
 import { ChatInputBar } from '../components/chat_input_bar';
@@ -104,6 +105,20 @@ export const ChatScreen: React.FC = () => {
   ]);
 
   const flat_list_ref = useRef<FlatList>(null);
+  const safe_insets = useSafeAreaInsets();
+  const [is_keyboard_open, set_is_keyboard_open] = useState<boolean>(false);
+
+  // Clavier ouvert : la marge de la barre d'accueil créerait un trou au-dessus du clavier
+  useEffect(() => {
+    const show_event = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hide_event = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const show_sub = Keyboard.addListener(show_event, () => set_is_keyboard_open(true));
+    const hide_sub = Keyboard.addListener(hide_event, () => set_is_keyboard_open(false));
+    return () => {
+      show_sub.remove();
+      hide_sub.remove();
+    };
+  }, []);
 
   const scroll_to_end = () => {
     setTimeout(() => flat_list_ref.current?.scrollToEnd({ animated: true }), 120);
@@ -454,13 +469,16 @@ export const ChatScreen: React.FC = () => {
           showsVerticalScrollIndicator={false}
         />
 
-        <ChatInputBar
-          on_send_message={handle_send_message}
-          on_open_camera={() => set_is_camera_open(true)}
-          placeholder={
-            active_question ? `Valeur pour « ${active_question.field_label} »...` : 'Message ou photo...'
-          }
-        />
+        {/* Marge du bas : barre d'accueil et coins arrondis de l'iPhone (0 sur la plupart des Android) */}
+        <View style={{ paddingBottom: is_keyboard_open ? 0 : safe_insets.bottom }}>
+          <ChatInputBar
+            on_send_message={handle_send_message}
+            on_open_camera={() => set_is_camera_open(true)}
+            placeholder={
+              active_question ? `Valeur pour « ${active_question.field_label} »...` : 'Message ou photo...'
+            }
+          />
+        </View>
       </KeyboardAvoidingView>
 
       <CameraModal

@@ -23,7 +23,20 @@
     },
     "plugins": [
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "L'application utilise la caméra pour photographier les pages du registre."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "L'application accède à vos photos pour importer une page de registre déjà photographiée.",
+          "savePhotosPermission": false
+        }
+      ]
     ]
   }
 }

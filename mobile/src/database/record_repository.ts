@@ -80,7 +80,8 @@ export const get_database_connection = (): Promise<SQLite.SQLiteDatabase> => {
  * en cas d'échec on lève l'erreur au lieu de garder le chemin du cache.
  */
 const persist_photo = async (source_image_uri: string, file_id: string): Promise<string> => {
-  if (!source_image_uri.startsWith('file://')) {
+  // file:// (caméra, iOS, asset de démo) ou content:// (galerie Android)
+  if (!source_image_uri.startsWith('file://') && !source_image_uri.startsWith('content://')) {
     throw new Error(`URI de photo non locale, impossible de la stocker hors ligne : ${source_image_uri}`);
   }
 

@@ -1,3 +1,4 @@
+import { File } from 'expo-file-system';
 import { api_config } from '../config/api_config';
 import { db_record_row } from '../types/record_types';
 import { extracted_record_data, record_status, doubtful_field_statuses } from '../types/chat_types';
@@ -16,9 +17,6 @@ export interface sync_result_item {
   is_simulated?: boolean;
   error_message?: string;
 }
-
-const mime_type_from_uri = (image_uri: string): string =>
-  image_uri.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
 
 /**
  * Un record avec au moins un champ douteux passe en 'a_reviser', sinon 'traite_ia'.
@@ -44,15 +42,14 @@ export const upload_and_extract_record = async (
   try {
     const form_payload = new FormData();
 
-    // Préparation du fichier image pour l'envoi multipart
-    const filename_part = record_item.image_uri.split('/').pop() || 'photo_registre.jpg';
-    const form_file_object = {
-      uri: record_item.image_uri,
-      name: filename_part,
-      type: mime_type_from_uri(record_item.image_uri),
-    } as any;
-
-    form_payload.append('image_file', form_file_object);
+    // Depuis le SDK 52, fetch = expo/fetch, qui refuse l'objet RN { uri, name, type }
+    // ("Unsupported FormDataPart implementation"). Le File d'expo-file-system est accepté :
+    // il expose bytes(), name et type (MIME).
+    const image_file = new File(record_item.image_uri);
+    if (!image_file.exists) {
+      throw new Error(`Photo introuvable sur le téléphone : ${record_item.image_uri}`);
+    }
+    form_payload.append('image_file', image_file as unknown as Blob);
     form_payload.append('record_id', record_item.id);
     if (record_item.patient_id) {
       form_payload.append('patient_id', record_item.patient_id);

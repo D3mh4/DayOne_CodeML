@@ -10,6 +10,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { extracted_record_data, doubtful_field_statuses } from '../types/chat_types';
 
 interface correction_modal_props {
@@ -33,6 +34,7 @@ export const CorrectionModal: React.FC<correction_modal_props> = ({
   on_save_corrections,
 }) => {
   const [form_values, set_form_values] = useState<Record<string, string>>({});
+  const safe_insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (initial_data) {
@@ -104,7 +106,11 @@ export const CorrectionModal: React.FC<correction_modal_props> = ({
             </TouchableOpacity>
           </View>
 
-          <ScrollView className="p-4" showsVerticalScrollIndicator={false}>
+          <ScrollView
+            className="p-4"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingBottom: safe_insets.bottom }}
+          >
             <Text className="text-xs text-slate-500 mb-3 font-medium">
               Vérifiez et corrigez les valeurs manuscrites extraites par l'IA avant validation définitive :
             </Text>

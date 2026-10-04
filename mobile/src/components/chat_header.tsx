@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 interface chat_header_props {
   title: string;
@@ -25,8 +26,11 @@ export const ChatHeader: React.FC<chat_header_props> = ({
   const status_label =
     pending_count > 0 ? `${network_label} • ${pending_count} en attente IA` : network_label;
 
+  // Hauteur réelle de la barre d'état / encoche au lieu d'une valeur fixe
+  const safe_insets = useSafeAreaInsets();
+
   return (
-    <View className="bg-whatsapp_teal pt-12 pb-3 px-4 flex-row items-center">
+    <View className="bg-whatsapp_teal pb-3 px-4 flex-row items-center" style={{ paddingTop: safe_insets.top + 8 }}>
       <View className="w-10 h-10 rounded-full bg-white/20 items-center justify-center mr-3">
         <MaterialCommunityIcons name="mother-nurse" size={24} color="#FFFFFF" />
       </View>
