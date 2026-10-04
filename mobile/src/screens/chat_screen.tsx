@@ -86,7 +86,8 @@ const build_record_card = (
   record_id: string,
   record_status_val: record_status,
   extracted_data: extracted_record_data,
-  is_simulated = false
+  is_simulated = false,
+  page_title?: string
 ): chat_message =>
   build_message('assistant', {
     content_type: 'record_card',
@@ -95,6 +96,8 @@ const build_record_card = (
     extracted_data,
     message_text: is_simulated
       ? '⚠️ Données SIMULÉES (backend en mode mock, pas de vraie IA) :'
+      : page_title
+      ? `📋 Page « ${page_title} » : voici ce que j’ai lu.`
       : '📋 Voici ce que j’ai lu sur la page :',
   });
 
@@ -172,13 +175,15 @@ export const ChatScreen: React.FC = () => {
     }
 
     const [field_key, field_val] = remaining_fields[0];
-    const field_label = to_field_label(field_key);
+    const field_label = field_val?.label ?? to_field_label(field_key);
     const read_value = field_val?.valeur !== null && field_val?.valeur !== undefined ? String(field_val.valeur) : null;
     const confidence_pct = Math.round((field_val?.confiance ?? 0) * 100);
 
     const question_text =
       field_val?.statut === 'illisible' || read_value === null
         ? `❓ Je n’arrive pas à lire « ${field_label} ». Pouvez-vous taper la valeur écrite sur le registre ?`
+        : field_val?.raison
+        ? `🤔 Pour « ${field_label} » j’ai lu « ${read_value} », mais ${field_val.raison}. Tapez la bonne valeur, ou « ok » si c’est correct.`
         : `🤔 Pour « ${field_label} » j’ai lu « ${read_value} », mais je n’en suis sûr qu’à ${confidence_pct} %. Tapez la bonne valeur, ou « ok » si c’est correct.`;
 
     const remaining_suffix =
@@ -192,7 +197,13 @@ export const ChatScreen: React.FC = () => {
     if (!sync_res.extracted_data || !sync_res.record_status) return;
     update_record_messages(sync_res.record_id, { record_status: sync_res.record_status });
     append_messages(
-      build_record_card(sync_res.record_id, sync_res.record_status, sync_res.extracted_data, sync_res.is_simulated)
+      build_record_card(
+        sync_res.record_id,
+        sync_res.record_status,
+        sync_res.extracted_data,
+        sync_res.is_simulated,
+        sync_res.page_title
+      )
     );
     ask_next_doubtful_field(sync_res.record_id, sync_res.extracted_data);
   };
@@ -307,7 +318,7 @@ export const ChatScreen: React.FC = () => {
         read_value !== null && confirmation_answers.includes(trimmed_answer.toLowerCase());
       const final_value = is_confirmation ? read_value : trimmed_answer;
 
-      current_data[field_key] = { valeur: final_value, confiance: 1.0, statut: 'connu' };
+      current_data[field_key] = { ...current_data[field_key], valeur: final_value, confiance: 1.0, statut: 'connu', raison: null };
 
       const next_status = status_after_extraction(current_data);
       await update_record_status_and_data(record_id, next_status, current_data);

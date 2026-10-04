@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, Image, TouchableOpacity } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import {
@@ -48,6 +48,8 @@ const field_status_labels: Record<field_status, string> = {
   a_reviser: 'à vérifier',
 };
 
+const collapsed_field_count = 8;
+
 const needs_review_actions = (status?: record_status) => status === 'traite_ia' || status === 'a_reviser';
 
 export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
@@ -57,6 +59,7 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
   on_retake_record,
 }) => {
   const is_user_message = message.sender_type === 'user';
+  const [is_expanded, set_is_expanded] = useState<boolean>(false);
 
   // Note système centrée, comme les messages "chiffrement de bout en bout" de WhatsApp
   if (message.sender_type === 'system') {
@@ -72,6 +75,17 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
   const status_badge = message.content_type === 'image' && message.record_status
     ? status_badges[message.record_status]
     : null;
+  // Une page peut avoir jusqu'à 276 champs : doutes d'abord, puis les valeurs lues, champs vides seulement comptés
+  const all_fields = Object.entries(message.extracted_data ?? {}).filter(([, field_val]) => Boolean(field_val));
+  const doubtful_fields = all_fields.filter(([, field_val]) => doubtful_field_statuses.includes(field_val!.statut));
+  const filled_fields = all_fields.filter(
+    ([, field_val]) => field_val!.statut === 'connu' || field_val!.statut === 'inconnu'
+  );
+  const empty_count = all_fields.length - doubtful_fields.length - filled_fields.length;
+  const shown_filled = is_expanded ? filled_fields : filled_fields.slice(0, collapsed_field_count);
+  const hidden_filled_count = filled_fields.length - shown_filled.length;
+  const visible_fields = [...doubtful_fields, ...shown_filled];
+
   const show_actions = Boolean(message.record_id && message.extracted_data && needs_review_actions(message.record_status));
 
   return (
@@ -95,7 +109,7 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
 
         {message.extracted_data && (
           <View className="mt-1.5">
-            {Object.entries(message.extracted_data).map(([field_name, field_val]) => {
+            {visible_fields.map(([field_name, field_val]) => {
               if (!field_val) return null;
 
               const is_doubtful = doubtful_field_statuses.includes(field_val.statut);
@@ -105,8 +119,8 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
 
               return (
                 <View key={field_name} className="flex-row justify-between py-1">
-                  <Text className="text-[13px] text-whatsapp_gray_text capitalize mr-3">
-                    {field_name.replace(/_/g, ' ')}
+                  <Text className="text-[13px] text-whatsapp_gray_text mr-3 flex-shrink">
+                    {field_val.label ?? field_name.replace(/_/g, ' ')}
                   </Text>
                   <View className="flex-shrink items-end">
                     <Text
@@ -126,6 +140,15 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
                 </View>
               );
             })}
+
+            {hidden_filled_count > 0 && (
+              <TouchableOpacity onPress={() => set_is_expanded(true)} className="py-1.5">
+                <Text className="text-[#027EB5] text-[13px]">Voir les {hidden_filled_count} autres valeurs lues</Text>
+              </TouchableOpacity>
+            )}
+            {empty_count > 0 && (
+              <Text className="text-[11px] text-slate-400 pt-1">{empty_count} champ(s) vide(s) ou sans objet sur cette page</Text>
+            )}
           </View>
         )}
 

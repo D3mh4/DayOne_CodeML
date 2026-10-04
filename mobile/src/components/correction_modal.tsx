@@ -34,6 +34,8 @@ export const CorrectionModal: React.FC<correction_modal_props> = ({
   on_save_corrections,
 }) => {
   const [form_values, set_form_values] = useState<Record<string, string>>({});
+  // Une page peut avoir 276 champs : par défaut on ne montre que ceux lus ou douteux
+  const [show_empty_fields, set_show_empty_fields] = useState<boolean>(false);
   const safe_insets = useSafeAreaInsets();
 
   useEffect(() => {
@@ -72,6 +74,8 @@ export const CorrectionModal: React.FC<correction_modal_props> = ({
       if (trimmed_val === original_val) return;
 
       updated_record_data[key] = {
+        ...existing_field,
+        raison: null,
         valeur: trimmed_val || null,
         confiance: 1.0, // Correction manuelle par la sage-femme = confiance maximale
         statut: trimmed_val ? 'connu' : 'non_fourni',
@@ -114,9 +118,16 @@ export const CorrectionModal: React.FC<correction_modal_props> = ({
             <Text className="text-xs text-slate-500 mb-3 font-medium">
               Vérifiez et corrigez les valeurs manuscrites extraites par l'IA avant validation définitive :
             </Text>
+            <TouchableOpacity onPress={() => set_show_empty_fields((prev) => !prev)} className="mb-3">
+              <Text className="text-[#027EB5] text-xs font-medium">
+                {show_empty_fields ? 'Masquer les champs vides' : 'Afficher aussi les champs vides (saisie manuelle)'}
+              </Text>
+            </TouchableOpacity>
 
             {Object.entries(initial_data).map(([field_key, field_obj]) => {
               if (!field_obj) return null;
+              const is_empty_field = field_obj.statut === 'non_fourni' || field_obj.statut === 'non_applicable';
+              if (is_empty_field && !show_empty_fields) return null;
 
               const is_illisible_initial = doubtful_field_statuses.includes(field_obj.statut);
               const current_field_value = form_values[field_key] ?? '';
@@ -125,7 +136,7 @@ export const CorrectionModal: React.FC<correction_modal_props> = ({
                 <View key={field_key} className="mb-3">
                   <View className="flex-row justify-between items-center mb-1">
                     <Text className="text-xs font-semibold text-slate-700 capitalize">
-                      {field_key.replace(/_/g, ' ')} :
+                      {field_obj.label ?? field_key.replace(/_/g, ' ')} :
                     </Text>
                     {is_illisible_initial && (
                       <View className="bg-rose-100 px-2 py-0.5 rounded-full flex-row items-center">
@@ -140,7 +151,7 @@ export const CorrectionModal: React.FC<correction_modal_props> = ({
                   <TextInput
                     value={current_field_value}
                     onChangeText={(val) => handle_field_change(field_key, val)}
-                    placeholder={`Saisir ${field_key.replace(/_/g, ' ')}...`}
+                    placeholder="Valeur écrite sur le registre..." 
                     placeholderTextColor="#94A3B8"
                     className={`border rounded-xl px-3 py-2 text-sm text-slate-900 bg-slate-50 ${
                       is_illisible_initial && !current_field_value

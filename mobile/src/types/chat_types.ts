@@ -48,6 +48,9 @@ export interface extracted_field_value {
   valeur: string | number | null;
   confiance: number;
   statut: field_status;
+  // Libellé lisible (ex. « Poids (kg) (Visite 2) ») et raison d'un doute, fournis par le backend
+  label?: string;
+  raison?: string | null;
 }
 
 export interface extracted_record_data {

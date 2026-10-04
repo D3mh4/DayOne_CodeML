@@ -15,6 +15,7 @@ export interface sync_result_item {
   record_status?: record_status;
   extracted_data?: extracted_record_data;
   is_simulated?: boolean;
+  page_title?: string;
   error_message?: string;
 }
 
@@ -94,6 +95,7 @@ export const upload_and_extract_record = async (
       record_status: next_status,
       extracted_data: extracted_result,
       is_simulated: Boolean(response_json.is_simulated),
+      page_title: response_json.page_title ?? undefined,
     };
   } catch (sync_error: any) {
     const error_message =

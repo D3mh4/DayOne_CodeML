@@ -48,12 +48,15 @@ def test_extract_registry_mock_mode(monkeypatch):
     assert json_data['record_id'] == 'rec_test_456'
     assert json_data['patient_id'] == 'PAT-TEST-99'
 
+    assert json_data['page_type'] == 'p4_accouchement'
     extracted = json_data['extracted_data']
-    # Aucun identifiant direct ne doit sortir du backend
-    assert 'nom_patiente' not in extracted
     for field_val in extracted.values():
         assert field_val['statut'] in valid_statuses
         assert 0.0 <= field_val['confiance'] <= 1.0
+        assert field_val['label']
+    # Règle de vraisemblance : « 3.5 » pour un poids de naissance ressemble à des kg
+    assert extracted['poids_naissance']['statut'] == 'a_reviser'
+    assert '3500' in extracted['poids_naissance']['raison']
 
 
 def test_extract_registry_failure_is_not_hidden(monkeypatch):

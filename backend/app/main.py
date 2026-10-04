@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
+from app.schemas.registry_pages import pages_by_type
 from app.schemas.registry_schema import extraction_response
 from app.services.gemini_extractor import (
     extract_registry_from_image,
@@ -54,6 +55,7 @@ async def extract_registry_endpoint(
     image_file: UploadFile = File(..., description="Fichier image du registre papier"),
     record_id: Optional[str] = Form(None, description="Identifiant unique du record mobile"),
     patient_id: Optional[str] = Form(None, description="Identifiant optionnel de la patiente"),
+    page_type: Optional[str] = Form(None, description="Type de page si déjà connu (sinon reconnu par l'IA)"),
 ):
     """
     Endpoint principal pour analyser une photo de registre papier de maternité,
@@ -81,35 +83,38 @@ async def extract_registry_endpoint(
         f"type={content_type_header}, record_id={record_id}"
     )
 
-    # 3. Mode simulation explicite : signalé dans la réponse, jamais déguisé en vraie extraction
-    if settings.extraction_provider == 'mock' or not is_gemini_configured():
-        return extraction_response(
-            success=True,
-            record_id=record_id,
-            patient_id=patient_id,
-            extracted_data=extract_with_simulated_fallback(),
-            error_message="Mode simulation actif (EXTRACTION_PROVIDER=mock ou GEMINI_API_KEY absente)",
-            is_simulated=True,
-        )
+    if page_type and page_type not in pages_by_type:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Type de page inconnu : {page_type}")
 
-    # 4. Extraction réelle : en cas d'échec on renvoie une erreur, le mobile garde le record en file
-    try:
-        extracted_data = await extract_registry_from_image(
-            image_bytes=image_content_bytes,
-            image_mime_type=content_type_header,
-        )
-    except extraction_error as failed_extraction:
-        logger.error(f"Extraction échouée pour record_id={record_id}: {failed_extraction}")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(failed_extraction),
-        )
+    # 3. Mode simulation explicite : signalé dans la réponse, jamais déguisé en vraie extraction
+    is_simulated = settings.extraction_provider == 'mock' or not is_gemini_configured()
+    if is_simulated:
+        result = extract_with_simulated_fallback()
+    else:
+        # 4. Extraction réelle : en cas d'échec on renvoie une erreur, le mobile garde le record en file
+        try:
+            result = await extract_registry_from_image(
+                image_bytes=image_content_bytes,
+                image_mime_type=content_type_header,
+                page_type_hint=page_type,
+            )
+        except extraction_error as failed_extraction:
+            logger.error(f"Extraction échouée pour record_id={record_id}: {failed_extraction}")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=str(failed_extraction),
+            )
 
     return extraction_response(
         success=True,
         record_id=record_id,
         patient_id=patient_id,
-        extracted_data=extracted_data,
+        page_type=result.page_type,
+        page_title=pages_by_type[result.page_type].title,
+        page_confidence=result.page_confidence,
+        extracted_data=result.fields,
+        error_message="Mode simulation actif (EXTRACTION_PROVIDER=mock ou GEMINI_API_KEY absente)" if is_simulated else None,
+        is_simulated=is_simulated,
     )
 
 if __name__ == '__main__':
