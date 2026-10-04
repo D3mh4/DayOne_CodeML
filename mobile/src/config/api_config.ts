@@ -1,12 +1,30 @@
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 
-// Sur un vrai téléphone (Expo Go), mettre l'IP LAN du PC qui fait tourner le backend dans mobile/.env :
-//   EXPO_PUBLIC_API_URL=http://192.168.x.x:8000
-// Par défaut : émulateur Android (10.0.2.2) ou simulateur iOS / web (localhost).
-const fallback_backend_host =
-  Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://localhost:8000';
+const detect_backend_url = (): string => {
+  // 1. Variable d'environnement explicite (mobile/.env)
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL;
+  }
 
-const backend_base_url = process.env.EXPO_PUBLIC_API_URL || fallback_backend_host;
+  // 2. Détection automatique de l'IP du Mac hôte via Metro bundler
+  const metro_host_uri =
+    Constants.expoConfig?.hostUri ||
+    (Constants as any).manifest?.debuggerHost ||
+    (Constants as any).manifest2?.extra?.expoClient?.hostUri;
+
+  if (metro_host_uri) {
+    const host_ip = metro_host_uri.split(':')[0];
+    if (host_ip && host_ip !== 'localhost' && host_ip !== '127.0.0.1') {
+      return `http://${host_ip}:8000`;
+    }
+  }
+
+  // 3. IP LAN actuelle du Mac pour les téléphones physiques
+  return 'http://10.201.42.136:8000';
+};
+
+const backend_base_url = detect_backend_url();
 
 export const api_config = {
   backend_base_url,
@@ -14,3 +32,4 @@ export const api_config = {
   health_endpoint: `${backend_base_url}/health`,
   request_timeout_ms: 60000,
 };
+

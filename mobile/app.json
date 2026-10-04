@@ -31,10 +31,9 @@
         }
       ],
       [
-        "expo-media-library",
+        "expo-image-picker",
         {
-          "photosPermission": "L'application accède à vos photos pour importer une page de registre déjà photographiée.",
-          "savePhotosPermission": false
+          "photosPermission": "L'application accède à vos photos pour importer une page de registre déjà photographiée."
         }
       ]
     ]

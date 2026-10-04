@@ -93,15 +93,9 @@ export const CameraModal: React.FC<camera_modal_props> = ({
   };
 
   const handle_open_gallery = async () => {
-    if (gallery.is_granted) {
-      set_is_gallery_open(true);
-      return;
-    }
-    const permission_result = await gallery.request_permission();
-    if (permission_result.granted) {
-      set_is_gallery_open(true);
-    } else {
-      Alert.alert('Galerie', 'L’accès aux photos a été refusé. Vous pouvez l’autoriser dans les réglages du téléphone.');
+    const selected_uri = await gallery.pick_from_library();
+    if (selected_uri) {
+      submit_photo(selected_uri);
     }
   };
 
