@@ -21,8 +21,8 @@ from app.services.plausibility import apply_consistency_rules, apply_plausibilit
 logger = logging.getLogger('gemini_extractor')
 logger.setLevel(logging.INFO)
 
-# Si le modèle configuré est saturé (503) ou indisponible, on essaie les suivants
-fallback_gemini_models = ['gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-3.5-flash']
+# Si le modèle configuré est saturé (503) ou indisponible, on essaie les suivants (3.5-flash-lite a 500 RPD)
+fallback_gemini_models = ['gemini-3.5-flash-lite', 'gemini-flash-latest', 'gemini-3.5-flash']
 placeholder_keys = {'', 'your_gemini_api_key_here', 'your_groq_api_key_here', 'aizasy...', 'gsk_...'}
 
 
@@ -40,7 +40,10 @@ class page_extraction_result:
 
 
 def _is_real_key(api_key: str) -> bool:
-    return api_key.strip().lower() not in placeholder_keys
+    return bool(api_key and api_key.strip().lower() not in placeholder_keys)
+
+
+is_real_key = _is_real_key
 
 
 def is_gemini_sdk_installed() -> bool:
@@ -97,7 +100,13 @@ def extract_with_simulated_fallback() -> page_extraction_result:
 
 # -- fournisseurs ---------------------------------------------------------------------------------
 
-async def _gemini_json(image_bytes: bytes, image_mime_type: str, prompt: str, response_model: type[BaseModel]) -> tuple[BaseModel, str]:
+async def _gemini_json(
+    image_bytes: bytes,
+    image_mime_type: str,
+    prompt: str,
+    response_model: type[BaseModel],
+    custom_api_key: Optional[str] = None,
+) -> tuple[BaseModel, str]:
     try:
         from google import genai
         from google.genai import types
@@ -108,7 +117,8 @@ async def _gemini_json(image_bytes: bytes, image_mime_type: str, prompt: str, re
             "Activez le .venv du backend (ou ./run_server.sh) puis : pip install -r requirements.txt"
         ) from missing_sdk_error
 
-    client = genai.Client(api_key=settings.gemini_api_key.strip())
+    active_key = custom_api_key.strip() if custom_api_key and _is_real_key(custom_api_key) else settings.gemini_api_key.strip()
+    client = genai.Client(api_key=active_key)
     failures = []
     for model_name in dict.fromkeys([settings.gemini_model_name, *fallback_gemini_models]):
         try:
@@ -133,10 +143,17 @@ async def _gemini_json(image_bytes: bytes, image_mime_type: str, prompt: str, re
     raise extraction_error('Gemini indisponible — ' + ' | '.join(failures))
 
 
-async def _groq_json(image_bytes: bytes, image_mime_type: str, prompt: str, response_model: type[BaseModel]) -> tuple[BaseModel, str]:
+async def _groq_json(
+    image_bytes: bytes,
+    image_mime_type: str,
+    prompt: str,
+    response_model: type[BaseModel],
+    custom_api_key: Optional[str] = None,
+) -> tuple[BaseModel, str]:
     """Groq ne garantit pas le schéma : on le donne dans la consigne puis on valide avec Pydantic."""
     import httpx
 
+    active_key = custom_api_key.strip() if custom_api_key and _is_real_key(custom_api_key) else settings.groq_api_key.strip()
     schema_text = json.dumps(response_model.model_json_schema(), ensure_ascii=False)
     request_payload = {
         'model': settings.groq_model_name,
@@ -155,7 +172,7 @@ async def _groq_json(image_bytes: bytes, image_mime_type: str, prompt: str, resp
             groq_response = await http_client.post(
                 'https://api.groq.com/openai/v1/chat/completions',
                 json=request_payload,
-                headers={'Authorization': f'Bearer {settings.groq_api_key.strip()}'},
+                headers={'Authorization': f'Bearer {active_key}'},
             )
             groq_response.raise_for_status()
             generated_content = groq_response.json()['choices'][0]['message']['content']
@@ -164,8 +181,22 @@ async def _groq_json(image_bytes: bytes, image_mime_type: str, prompt: str, resp
         raise extraction_error(f'Groq indisponible — {groq_error}') from groq_error
 
 
-async def _generate_json(image_bytes: bytes, image_mime_type: str, prompt: str, response_model: type[BaseModel]) -> tuple[BaseModel, str]:
-    """Essaie les fournisseurs configurés dans l'ordre (auto = Gemini puis Groq). Aucun repli sur des données factices."""
+async def _generate_json(
+    image_bytes: bytes,
+    image_mime_type: str,
+    prompt: str,
+    response_model: type[BaseModel],
+    custom_api_key: Optional[str] = None,
+    custom_provider: Optional[str] = None,
+) -> tuple[BaseModel, str]:
+    """Essaie les fournisseurs configurés dans l'ordre (auto = Gemini puis Groq), ou utilise la clé client personnalisée."""
+    if custom_api_key and _is_real_key(custom_api_key):
+        norm_provider = (custom_provider or '').strip().lower()
+        if norm_provider == 'groq' or custom_api_key.strip().startswith('gsk_'):
+            return await _groq_json(image_bytes, image_mime_type, prompt, response_model, custom_api_key=custom_api_key)
+        else:
+            return await _gemini_json(image_bytes, image_mime_type, prompt, response_model, custom_api_key=custom_api_key)
+
     provider_name = settings.extraction_provider
     providers = []
     if provider_name in ('auto', 'gemini') and is_gemini_configured():
@@ -188,6 +219,8 @@ async def extract_registry_from_image(
     image_bytes: bytes,
     image_mime_type: str = 'image/jpeg',
     page_type_hint: Optional[str] = None,
+    custom_api_key: Optional[str] = None,
+    custom_provider: Optional[str] = None,
 ) -> page_extraction_result:
     """
     1. Reconnaît le type de page (sauf si page_type_hint est fourni), 2. extrait les champs de ce type de page,
@@ -197,14 +230,20 @@ async def extract_registry_from_image(
     if page_type_hint:
         page_type, page_confidence = page_type_hint, 1.0
     else:
-        classification, classification_model = await _generate_json(image_bytes, image_mime_type, classification_prompt(), page_classification)
+        classification, classification_model = await _generate_json(
+            image_bytes, image_mime_type, classification_prompt(), page_classification,
+            custom_api_key=custom_api_key, custom_provider=custom_provider
+        )
         model_names.append(classification_model)
         page_type, page_confidence = classification.page_type, classification.confiance
         logger.info(f"Page reconnue : {page_type} (confiance {page_confidence:.2f})")
         if page_type == 'inconnue':
             raise extraction_error("La photo ne ressemble à aucune page du registre. Reprenez la photo.")
 
-    extraction, extraction_model = await _generate_json(image_bytes, image_mime_type, extraction_prompt(page_type), response_model_for(page_type))
+    extraction, extraction_model = await _generate_json(
+        image_bytes, image_mime_type, extraction_prompt(page_type), response_model_for(page_type),
+        custom_api_key=custom_api_key, custom_provider=custom_provider
+    )
     model_names.append(extraction_model)
 
     fields = post_process_fields(page_type, flatten_extraction(page_type, extraction))

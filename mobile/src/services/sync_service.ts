@@ -7,6 +7,7 @@ import {
   mark_record_failed,
   update_record_status_and_data,
 } from '../database/record_repository';
+import { get_custom_api_config } from './settings_service';
 
 export interface sync_result_item {
   success: boolean;
@@ -56,6 +57,12 @@ export const upload_and_extract_record = async (
       form_payload.append('patient_id', record_item.patient_id);
     }
 
+    const custom_config = await get_custom_api_config();
+    if (custom_config.api_key && custom_config.provider) {
+      form_payload.append('custom_api_key', custom_config.api_key);
+      form_payload.append('custom_provider', custom_config.provider);
+    }
+
     const fetch_response = await fetch(api_config.extract_endpoint, {
       method: 'POST',
       body: form_payload,
@@ -84,6 +91,27 @@ export const upload_and_extract_record = async (
     }
 
     const extracted_result: extracted_record_data = response_json.extracted_data;
+    const detected_title = response_json.page_title || extracted_result.titre_document?.valeur;
+
+    if (detected_title && String(detected_title).trim() !== '') {
+      extracted_result.titre_document = {
+        valeur: String(detected_title).trim(),
+        statut: 'connu',
+        confiance: 1.0,
+        label: 'Nom du document',
+        raison: null,
+      };
+    } else {
+      // Le nom du document est obligatoire : si non détecté, on l'ajoute à réviser
+      extracted_result.titre_document = {
+        valeur: null,
+        statut: 'a_reviser',
+        confiance: 0.0,
+        label: 'Nom du document',
+        raison: 'Nom du document non détecté automatiquement. Ce champ est obligatoire.',
+      };
+    }
+
     const next_status = status_after_extraction(extracted_result);
 
     await update_record_status_and_data(record_item.id, next_status, extracted_result);
@@ -95,7 +123,7 @@ export const upload_and_extract_record = async (
       record_status: next_status,
       extracted_data: extracted_result,
       is_simulated: Boolean(response_json.is_simulated),
-      page_title: response_json.page_title ?? undefined,
+      page_title: detected_title ? String(detected_title).trim() : undefined,
     };
   } catch (sync_error: any) {
     const error_message =

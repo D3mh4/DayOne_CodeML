@@ -9,19 +9,23 @@ interface attachment_panel_props {
   bottom_inset: number;
   on_pick_photo: (image_uri: string) => void;
   on_open_camera: () => void;
+  on_start_manual_entry?: () => void;
+  on_open_patient_browser?: () => void;
 }
 
 const panel_height = 320;
 
 /**
  * Panneau qui remplace le clavier sous la barre de saisie (comme WhatsApp / Telegram) :
- * tuiles Caméra et Démo, puis les photos de la galerie, des plus récentes aux plus anciennes.
+ * tuiles Caméra, Saisie manuelle et Démo, puis les photos de la galerie.
  */
 export const AttachmentPanel: React.FC<attachment_panel_props> = ({
   is_visible,
   bottom_inset,
   on_pick_photo,
   on_open_camera,
+  on_start_manual_entry,
+  on_open_patient_browser,
 }) => {
   const gallery = use_gallery_photos(is_visible);
 
@@ -47,13 +51,19 @@ export const AttachmentPanel: React.FC<attachment_panel_props> = ({
   };
 
   const action_tiles: grid_action_tile[] = [
-    { key: 'camera', label: 'Caméra', icon: 'camera', on_press: on_open_camera },
-    { key: 'demo', label: 'Page démo', icon: 'document-text-outline', on_press: handle_demo_page },
+    { key: 'camera', label: 'Caméra', icon: 'camera' as const, on_press: on_open_camera },
+    ...(on_start_manual_entry
+      ? [{ key: 'manual', label: 'Saisie manuelle', icon: 'create-outline' as const, on_press: on_start_manual_entry }]
+      : []),
+    ...(on_open_patient_browser
+      ? [{ key: 'patients', label: 'Dossiers', icon: 'people-outline' as const, on_press: on_open_patient_browser }]
+      : []),
+    { key: 'demo', label: 'Page démo', icon: 'document-text-outline' as const, on_press: handle_demo_page },
   ];
 
   // Sans galerie intégrée (module absent ou accès refusé), on propose le sélecteur du système
   if (gallery.status === 'unavailable' || gallery.status === 'denied') {
-    action_tiles.push({ key: 'system', label: 'Galerie', icon: 'images-outline', on_press: handle_system_gallery });
+    action_tiles.push({ key: 'system', label: 'Galerie', icon: 'images-outline' as const, on_press: handle_system_gallery });
   }
 
   const empty_text =

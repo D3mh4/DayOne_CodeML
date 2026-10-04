@@ -150,5 +150,33 @@ def test_auto_mode_falls_back_to_groq_then_reports_errors(monkeypatch):
     assert '503' in str(raised.value) and '401' in str(raised.value)
 
 
+def test_extract_registry_with_custom_api_key(monkeypatch):
+    """Vérifie que la clé personnalisée client est bien transmise à l'extracteur."""
+    passed_args = {}
+
+    async def mock_extract(image_bytes, image_mime_type, page_type_hint, custom_api_key, custom_provider):
+        passed_args['custom_api_key'] = custom_api_key
+        passed_args['custom_provider'] = custom_provider
+        return gemini_extractor.page_extraction_result('p1_couverture', 0.95, {}, ['gemini-custom'])
+
+    monkeypatch.setattr(main_module, 'extract_registry_from_image', mock_extract)
+    client = TestClient(app)
+
+    response = client.post(
+        '/extract_registry',
+        files=build_dummy_upload(),
+        data={
+            'record_id': 'rec_custom_key',
+            'custom_api_key': 'AIzaSyTestCustomKey123456789',
+            'custom_provider': 'gemini',
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()['success'] is True
+    assert response.json()['is_simulated'] is False
+    assert passed_args['custom_api_key'] == 'AIzaSyTestCustomKey123456789'
+    assert passed_args['custom_provider'] == 'gemini'
+
+
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-v']))

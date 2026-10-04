@@ -14,8 +14,40 @@ interface chat_message_bubble_props {
   on_confirm_record?: (record_id: string) => void;
   on_correct_record?: (record_id: string) => void;
   on_retake_record?: (record_id: string) => void;
+  on_cancel_record?: (record_id: string) => void;
   on_quick_reply?: (reply: quick_reply) => void;
 }
+
+const render_whatsapp_formatted_text = (text: string) => {
+  const normalized_text = text.replace(/\*\*([^*\n]+?)\*\*/g, '*$1*');
+  const regex = /(\*[^*\n]+?\*|_[^_\n]+?_|~[^~\n]+?~)/g;
+  const parts = normalized_text.split(regex);
+
+  return parts.map((part, index) => {
+    if (part.startsWith('*') && part.endsWith('*') && part.length >= 2) {
+      return (
+        <Text key={index} style={{ fontWeight: '700', color: '#111B21' }}>
+          {part.slice(1, -1)}
+        </Text>
+      );
+    }
+    if (part.startsWith('_') && part.endsWith('_') && part.length >= 2) {
+      return (
+        <Text key={index} style={{ fontStyle: 'italic', color: '#54656F' }}>
+          {part.slice(1, -1)}
+        </Text>
+      );
+    }
+    if (part.startsWith('~') && part.endsWith('~') && part.length >= 2) {
+      return (
+        <Text key={index} style={{ textDecorationLine: 'line-through', color: '#8696A0' }}>
+          {part.slice(1, -1)}
+        </Text>
+      );
+    }
+    return <Text key={index}>{part}</Text>;
+  });
+};
 
 type status_tone = 'neutral' | 'waiting' | 'alert' | 'success';
 
@@ -59,6 +91,7 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
   on_confirm_record,
   on_correct_record,
   on_retake_record,
+  on_cancel_record,
   on_quick_reply,
 }) => {
   const is_user_message = message.sender_type === 'user';
@@ -107,7 +140,9 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
         )}
 
         {message.message_text && (
-          <Text className="text-whatsapp_dark_text text-[15px] leading-5">{message.message_text}</Text>
+          <Text className="text-whatsapp_dark_text text-[15px] leading-5">
+            {render_whatsapp_formatted_text(message.message_text)}
+          </Text>
         )}
 
         {message.extracted_data && (
@@ -193,13 +228,20 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
       {show_actions && (
         <View className="max-w-[85%] w-full mt-0.5">
           {[
-            { label: 'Confirmer', on_press: on_confirm_record },
-            { label: 'Corriger', on_press: on_correct_record },
-            { label: 'Reprendre la photo', on_press: on_retake_record },
+            { label: '✓ Confirmer', on_press: () => on_confirm_record?.(message.record_id!) },
+            { label: '✏️ Corriger', on_press: () => on_correct_record?.(message.record_id!) },
+            { label: '📸 Reprendre la photo', on_press: () => on_retake_record?.(message.record_id!) },
+            {
+              label: '❌ Annuler',
+              on_press: () =>
+                on_cancel_record
+                  ? on_cancel_record(message.record_id!)
+                  : on_quick_reply?.({ label: 'Annuler', value: 'annuler' }),
+            },
           ].map((action_item) => (
             <TouchableOpacity
               key={action_item.label}
-              onPress={() => action_item.on_press?.(message.record_id!)}
+              onPress={action_item.on_press}
               className="bg-whatsapp_incoming rounded-lg py-2.5 mt-0.5 items-center"
               activeOpacity={0.7}
             >
