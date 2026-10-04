@@ -137,6 +137,16 @@ python -m evaluation.evaluate --pages 1-80 --run-name complet --sleep 4  # pages
 python -m evaluation.degrade_images                                      # copies floues / inclinées / sombres
 python -m evaluation.evaluate --pages 1-80 --images ../data/degraded --run-name degrade
 ```
+**Simuler des photos de terrain.** Les images fournies sont des rendus propres, alors que la consigne annonce des photos floues, ombrées, inclinées et mal éclairées. [degrade_images.py](backend/evaluation/degrade_images.py) fabrique donc une copie « photo de téléphone » de chaque page, sans toucher aux originaux :
+- inclinaison aléatoire ;
+- baisse de luminosité et de contraste ;
+- ombre en dégradé (main ou téléphone au-dessus de la page) ;
+- flou de mise au point ;
+- bruit de capteur ;
+- résolution réduite et forte compression JPEG.
+
+La vérité terrain reste valable pour ces copies : on mesure ainsi la robustesse sur des photos réalistes avec le même script de score. Les 5 vraies photos du livret (`1-x.jpg`) servent de test qualitatif.
+
 Le rapport (`data/eval_runs/<run>/rapport.md`) donne, par type de page, l'exactitude par champ, l'exactitude sur les seuls champs remplis, les statuts, les valeurs inventées et la part des erreurs signalées par l'agent.
 
 **Résultat mesuré sur la patiente 1 (8 pages, 465 champs, `gemini-3.5-flash-lite`)** :
@@ -156,7 +166,12 @@ Particularités du jeu de données :
 ---
 
 ## 6. Limites connues
-- **Pas de chiffrement local.** La base SQLite et les photos sont stockées en clair dans le stockage privé de l'application. Il faudrait SQLCipher (development build, hors Expo Go) ou un chiffrement applicatif avec une clé dans `expo-secure-store`.
+- **Chiffrement local : prévu dès le départ, volontairement reporté après l'UX.** Pour ce MVP, la base SQLite et les photos sont dans le stockage privé de l'application (inaccessible aux autres applications), mais pas encore chiffrées. Nous avons choisi de prioriser l'expérience de la sage-femme et la fiabilité hors ligne. L'ajout est simple et localisé :
+  - `expo-sqlite` intègre SQLCipher : il suffit d'activer l'option dans `app.json` et d'ouvrir la base avec une clé ;
+  - la clé est générée au premier lancement et gardée dans le coffre sécurisé du téléphone (`expo-secure-store`) ;
+  - les photos se chiffrent au moment de leur copie dans le stockage de l'application.
+  
+  Le reste du code ne change pas. Seule contrainte : SQLCipher demande un *development build* Expo (plutôt qu'Expo Go), ce qui est le passage normal vers une application de production.
 - **La photo originale contient les identifiants imprimés sur le registre.** Elle est gardée localement (exigence du défi) et envoyée au fournisseur IA pour l'extraction. C'est acceptable avec des données synthétiques ; avec des données réelles, il faudrait un modèle hébergé localement ou un caviardage avant l'envoi.
 - **Pas d'accès par rôle à l'image, ni d'identifiant de sage-femme** enregistré avec la fiche.
 - **Statuts déclarés mais non utilisés.** Le modèle de données prévoit tout le cycle du défi, mais l'app n'utilise pas `capture`, `patiente_liee`, `synchronise`, `echec_synchronisation`, `doublon_suspecte` et `revision_manuelle_requise`. En particulier, il n'y a pas de serveur central qui recevrait les fiches validées : elles restent sur le téléphone.
