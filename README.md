@@ -172,7 +172,7 @@ Particularités du jeu de données :
   - les photos se chiffrent au moment de leur copie dans le stockage de l'application.
   
   Le reste du code ne change pas. Seule contrainte : SQLCipher demande un *development build* Expo (plutôt qu'Expo Go), ce qui est le passage normal vers une application de production.
-- **La photo originale contient les identifiants imprimés sur le registre.** Elle est gardée localement (exigence du défi) et envoyée au fournisseur IA pour l'extraction. C'est acceptable avec des données synthétiques ; avec des données réelles, il faudrait un modèle hébergé localement ou un caviardage avant l'envoi.
+- **Modèle d'IA hébergé localement (évolution prévue).** Le prototype travaille sur les données synthétiques fournies par les organisateurs, avec Gemini derrière notre backend. Comme le fournisseur d'IA est isolé dans le backend, il suffit d'y brancher un modèle hébergé par le ministère ou l'établissement pour passer aux données réelles, sans aucun changement dans l'application mobile.
 - **Pas d'accès par rôle à l'image, ni d'identifiant de sage-femme** enregistré avec la fiche.
 - **Statuts déclarés mais non utilisés.** Le modèle de données prévoit tout le cycle du défi, mais l'app n'utilise pas `capture`, `patiente_liee`, `synchronise`, `echec_synchronisation`, `doublon_suspecte` et `revision_manuelle_requise`. En particulier, il n'y a pas de serveur central qui recevrait les fiches validées : elles restent sur le téléphone.
 - **Une erreur définitive** (page non reconnue) est réessayée à chaque retour réseau au lieu d'être mise de côté.
