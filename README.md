@@ -1,202 +1,165 @@
 # DayOne_CodeML
 
-Prototype d'agent conversationnel de type WhatsApp, **hors ligne d'abord**, permettant aux sages-femmes en milieux à faibles ressources de photographier des registres de maternité papier, de stocker les fiches localement dans SQLite, d'extraire les données médicales structurées via l'IA au retour de la connexion, et de relier les visites au profil continu de chaque patiente.
+Agent conversationnel de type WhatsApp, **hors ligne d'abord**, pour les sages-femmes : on photographie une page du registre maternel papier, l'IA la transforme en fiche structurée (valeur, statut et confiance par champ), la sage-femme vérifie dans le chat, et les visites sont reliées au dossier de chaque patiente. Le registre papier reste l'outil de référence.
 
-- `mobile/` : Application mobile React Native Expo (TypeScript strict, NativeWind, SQLite local).
-- `backend/` : Serveur FastAPI Python (Google Gemini Multimodal + Groq Vision + règles de vraisemblance médicale).
-- `data/` : Jeu de données synthétiques officiel du défi (80 pages de livret, 129 images).
-
----
-
-## 🔑 1. Configuration des clés API (Plans 100% Gratuits)
-
-Le backend supporte **Google AI Studio (recommandé)** et **Groq Vision**, avec bascule automatique.
-
-### Option A : Google AI Studio (Recommandé — 500 requêtes gratuites/jour)
-1. Rendez-vous sur **[Google AI Studio](https://aistudio.google.com/apikey)** avec un compte Google/Gmail personnel.
-2. Cliquez sur **« Create API key »** ➔ **« Create API key in new project »**.
-3. Copiez votre clé (elle commence par `AIzaSy...`).
-4. Ouvrez `backend/.env` et renseignez :
-   ```env
-   GEMINI_API_KEY=AIzaSyVotreCleIci...
-   GEMINI_MODEL=gemini-3.5-flash-lite
-   EXTRACTION_PROVIDER=auto
-   ```
-   > 💡 **Pourquoi `gemini-3.5-flash-lite` ?** Sur le plan gratuit Google AI Studio, ce modèle offre **500 requêtes gratuites par jour** (contre seulement 20 requêtes pour Gemini 3.8 Flash), avec une exactitude mesurée de **99.1 %** sur notre jeu de test.
-
-### Option B : Groq Vision (Alternative)
-1. Rendez-vous sur **[Groq Console](https://console.groq.com/keys)** et créez un compte gratuit.
-2. Générez une clé d'API (elle commence par `gsk_...`).
-3. Dans `backend/.env` :
-   ```env
-   GROQ_API_KEY=gsk_VotreCleIci...
-   GROQ_MODEL=llama-3.2-11b-vision-preview
-   EXTRACTION_PROVIDER=groq
-   ```
+- `mobile/` : application Expo / React Native (TypeScript, NativeWind, SQLite local). C'est le prototype.
+- `backend/` : API FastAPI (Python) qui fait l'extraction avec Gemini (Groq en secours) et les contrôles de vraisemblance. Le backend ne stocke aucune donnée.
+- `data/` : données synthétiques des organisateurs, **non versionnées** (dépôt public). À télécharger depuis le
+  [Drive du défi](https://drive.google.com/drive/folders/1RtBBVDkPFfMiouPEry2Ogzu26Odh8JUF?usp=sharing) dans `data/` (ne pas les modifier).
 
 ---
 
-## 🚀 2. Lancer l'application (Pas à pas)
+## 1. Installation et lancement
 
-### Étape 1 : Démarrer le Backend (FastAPI)
+### Clé API (plans gratuits)
+- **Google AI Studio (recommandé)** : créer une clé sur https://aistudio.google.com/apikey (elle commence par `AIzaSy`).
+- **Groq (secours, optionnel)** : https://console.groq.com/keys (clé `gsk_...`).
+
 ```bash
 cd backend
-./run_server.sh
+cp .env.example .env
 ```
-*(Le script active automatiquement le `.venv` et démarre Uvicorn sur `http://0.0.0.0:8000`).*
+Dans `backend/.env` :
+```env
+GEMINI_API_KEY=AIzaSy...votre_cle
+GEMINI_MODEL=gemini-3.5-flash-lite
+EXTRACTION_PROVIDER=auto          # auto = Gemini puis Groq ; mock = données simulées sans IA
+```
+`gemini-3.5-flash-lite` a le plus gros quota gratuit (~500 requêtes/jour). Si le modèle configuré est saturé (429/503), le backend essaie automatiquement les modèles suivants de sa liste.
 
-Vérifiez que le serveur répond :
+### Backend
 ```bash
-curl http://localhost:8000/health
+cd backend
+./run_server.sh                    # macOS/Linux : crée le .venv si besoin et lance le serveur
+# Windows : python -m venv .venv && .venv\Scripts\activate && pip install -r requirements.txt
+#           uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+curl http://localhost:8000/health  # doit indiquer ai_service_configured: true
+python -m pytest tests             # tests du backend
 ```
 
-### Étape 2 : Démarrer le Mobile (Expo / React Native)
+### Mobile
 ```bash
 cd mobile
 npm install
 npx expo start -c
 ```
-1. Ouvrez l'application **Expo Go** sur votre téléphone (iOS ou Android), connecté sur le **même réseau Wi-Fi** que votre ordinateur.
-2. Scannez le QR Code affiché dans le terminal.
-3. *Astuce vrai téléphone :* si l'IP n'est pas détectée automatiquement, créez `mobile/.env` avec :
-   ```env
-   EXPO_PUBLIC_API_URL=http://<IP-LOCALE-DE-VOTRE-PC>:8000
-   ```
+Ouvrir **Expo Go** sur un téléphone connecté au **même Wi-Fi** que l'ordinateur, puis scanner le QR code. L'adresse du backend est détectée automatiquement ; sinon créer `mobile/.env` avec `EXPO_PUBLIC_API_URL=http://<IP-du-PC>:8000`.
+Le bouton Wi-Fi en haut de l'écran **simule une coupure réseau** (pour la démo hors ligne).
+
+### Repartir de zéro
+Taper `reset` dans le chat, puis confirmer : fiches, patientes et photos locales sont effacées (la langue et la clé API sont conservées).
 
 ---
 
-## 🔄 3. Comment vider le cache et tester de A à Z ?
+## 2. Cycle de vie d'un enregistrement
 
-Pour repartir d'un chat totalement vierge et retester tout le workflow de zéro :
-
-### Méthode 1 : Directement dans le chat (Recommandé — Instantané) ⚡
-1. Dans la barre de message en bas de l'application, tapez simplement :
-   > **`reset`** ou **`vider`**
-2. Le bot vous demandera confirmation via une puce WhatsApp.
-3. Cliquez sur **`[🗑️ Confirmer l’effacement]`**.
-4. Toute la base locale SQLite et les photos locales sont effacées, et l'application repart sur son écran d'accueil d'origine !
-
-### Méthode 2 : Vider le cache Expo (Metro Bundler)
-Dans votre terminal mobile :
-```bash
-npx expo start -c
 ```
-*(L'option `-c` vide tout le cache JavaScript et recharge les composants).*
+Photo prise ──► copiée dans le stockage de l'app + fiche SQLite  [en_attente_ia]
+                     │
+     réseau absent ──┴──► reste en file sur le téléphone ; envoi automatique au retour du réseau
+                     │      (réel ou simulé) ou en touchant « N en attente IA » dans l'en-tête
+     réseau présent ─┴──► envoi au backend : 1) type de page  2) extraction des champs  3) contrôles
+                     │
+          échec ─────┴──► [echec_traitement] (serveur injoignable, quota, page non reconnue) :
+                     │      la photo n'est jamais perdue, elle est renvoyée au prochain retour réseau
+          succès ────┴──► [traite_ia] aucun doute  |  [a_reviser] doutes → questions une par une
+                     │
+     « Confirmer » ──┴──► [valide] ──► liaison patiente ──► [enregistre] dans le dossier patiente
+                                                        ──► « page suivante » ou « terminer le livret »
+                                                            (retour au menu, fil de conversation vidé)
+```
+- **Reprendre la photo** remplace l'image d'une fiche et la renvoie en file `en_attente_ia`.
+- **Saisie manuelle** (sans photo, si l'IA est indisponible) crée directement une fiche `valide`.
+- Une fiche enregistrée reste modifiable champ par champ depuis `patients`.
+- Une seule fiche est vérifiée à la fois : si plusieurs pages reviennent du serveur en même temps, les suivantes attendent (bouton « Vérifier la fiche suivante »).
 
-### Méthode 3 : Sur le téléphone physique (Expo Go)
-- **Sur Android :** Paramètres du téléphone ➔ Applications ➔ Expo Go ➔ Stockage ➔ **« Vider les données »** et **« Vider le cache »**.
-- **Sur iOS :** Supprimez et réinstallez Expo Go si vous souhaitez purger le conteneur sandboxed d'iOS.
-
----
-
-## 💬 4. Le Workflow 100% Conversationnel (Zéro Popup)
-
-Toutes les interactions se font **exclusivement par messages WhatsApp et boutons de réponses rapides** :
-
-1. **Capture & Mode Hors Ligne :**
-   - Le bouton Wi-Fi dans l'en-tête permet de simuler une coupure réseau.
-   - Les photos prises hors ligne sont enregistrées dans SQLite sous le statut `en_attente_ia`.
-   - Au retour du réseau, la synchronisation s'exécute automatiquement en arrière-plan.
-
-2. **Extraction & Signalement des doutes :**
-   - L'IA extrait les données selon le schéma strict de la page (8 pages supportées).
-   - Les règles médicales ([`plausibility.py`](backend/app/services/plausibility.py)) détectent les incohérences (ex. poids en kg au lieu de g, tension anormale).
-   - L'agent pose des questions de suivi ciblées dans le chat pour chaque doute.
-
-3. **Correction conversationnelle :**
-   - En cliquant sur `[Corriger]` ou en tapant `corriger`, le bot affiche la liste numérotée des champs.
-   - La sage-femme tape le numéro (ex: `5`) ou le nom (`poids`).
-   - Un algorithme déterministe valide la nouvelle saisie médicale et met à jour le dossier en temps réel.
-   - Tapez `annuler` à tout moment pour revenir en arrière.
-
-4. **Liaison Patiente (Patient Matching) :**
-   - Dès la validation de la fiche, le bot propose :
-     * `1. Patiente existante A`
-     * `2. Patiente existante B`
-     * `3. ➕ Créer nouveau profil`
-     * `4. ❓ Classer sans lier`
-   - Le statut passe à `patiente_liee` puis `enregistre`.
-
-5. **Sessions Multi-pages :**
-   - L'agent propose immédiatement d'ajouter la page suivante du livret (`[📸 Ajouter une page]` ou `[🏁 Terminer]`).
-
-6. **Saisie Manuelle Complète :**
-   - Accessible via le trombone d'attachements (`Saisie manuelle`) ou en tapant `manuel` dans le chat pour saisir une fiche sans appareil photo.
-
-7. **Commandes disponibles dans le chat :**
-   - `info` ou `aide` : affiche le guide complet des commandes et raccourcis.
-   - `setting` ou `parametres` : ouvre le menu de réglages conversationnel (choix de langue FR/EN et configuration de clé API personnalisée Google AI Studio / Groq).
-   - `patient` ou `dossier` : consulte les patientes enregistrées, détaille les fiches associées avec possibilité de modification, suppression et navigation retour.
-   - `stats` ou `dashboard` : affiche le tableau de bord épidémiologique anonymisé (taux VIH/Syphilis/Hépatite C, constantes maternelles, poids de naissance).
-   - `lang en` / `lang fr` : bascule instantanément la langue de l'interface et de l'assistant (Français / Anglais).
-   - `photo` : déclenche la prise de photo du livret.
-   - `manuel` : démarre la saisie guidée pas à pas sans caméra.
-   - `corriger` : liste les champs de la fiche pour modification déterministe.
-   - `confirmer` : valide la fiche en cours.
-   - `annuler` : annule n'importe quelle action ou saisie en cours.
-   - `reset` ou `vider` : efface l'intégralité des fiches, des patientes et des photos pour repartir d'un dispensaire vierge (les clés API et réglages restent préservés).
+Statuts de champ : `connu`, `inconnu`, `non_fourni`, `illisible`, `non_applicable`, `a_reviser`.
 
 ---
 
-## ⚙️ 5. Menu « Setting » & Clé API Personnalisée (Client Mobile)
+## 3. Choix de conception
 
-Dans l'esprit 100% conversationnel (sans aucun formulaire popup), la commande `setting` permet de personnaliser l'application :
+### Schéma d'abord, pas d'OCR générique
+Le schéma des **8 pages du livret** est dans [backend/app/schemas/registry_pages.py](backend/app/schemas/registry_pages.py) : couverture, identification et antécédents, grossesse actuelle (9 colonnes de visites), accouchement, post-partum précoce et tardif (mère et nouveau-né). Il génère le schéma JSON imposé à Gemini et sert à lire la vérité terrain du PDF.
 
-1. **Choix de la langue de l'agent :**
-   - Tapez `1` (ou `langue`) pour basculer entre **Français** et **English**.
-   - Le choix est persisté en base locale SQLite et réutilisé à chaque réouverture de l'application.
+### Extraction en 2 étapes, puis contrôles
+1. Gemini reconnaît le type de page, puis remplit le schéma de cette page (valeur, confiance, statut).
+2. Le backend remet les cases à cocher au bon format (oui/non, options).
+3. Il applique des **règles de vraisemblance** ([plausibility.py](backend/app/services/plausibility.py)) : unités (poids « 3.5 » → des kg ?), tension, dates.
+4. Il applique des **contrôles de cohérence** entre champs : date prévue ≈ DDR + 280 jours, âge gestationnel cohérent avec la date de visite, parité ≤ gestité.
 
-2. **Saisie d'une clé API personnalisée :**
-   - Tapez `2` (ou `api`) pour accéder au sous-menu API :
-     * `1. Google AI Studio` (Gemini Flash)
-     * `2. Groq` (Llama 3.2 Vision)
-     * `3. Voir la configuration actuelle` (affichage masqué type `AIzaSy...4x9q`)
-     * `4. Réinitialiser` (revenir aux identifiants `.env` du serveur backend)
-     * `5. Retour`
-   - **Résistance absolue au `reset` :** La clé API est stockée dans une table isolée `app_setting` de SQLite. Lorsque la commande `reset` est lancée pour réinitialiser les données de santé et les photos, **la clé API et les préférences linguistiques ne sont jamais supprimées**.
-   - **Priorité client :** Dès qu'une clé personnalisée est enregistrée, le mobile la transmet automatiquement dans chaque requête d'extraction IA (`custom_api_key`), court-circuitant ainsi les quotas du serveur de démo pour utiliser votre propre quota gratuit.
+Une lecture douteuse passe `a_reviser` avec une raison, et l'agent pose la question. La confiance déclarée par Gemini est presque toujours ~0.99 : ces contrôles sont notre vrai signal de doute.
 
----
+### Pas d'entraînement ni de fine-tuning
+80 pages synthétiques suffisent pour **mesurer**, pas pour entraîner : un modèle entraîné dessus risquerait d'apprendre le rendu synthétique et d'échouer sur une vraie photo. Gemini lit aussi bien les vraies photos du livret (`1-x.jpg`).
 
-## 💡 Focus : La liaison patiente et l'option « 4. ❓ Classer sans lier »
+### Pourquoi un backend
+- La clé API ne vit pas dans l'application.
+- Le prompt, le schéma et les règles se modifient sans republier l'app.
+- On peut changer de fournisseur IA (Gemini, Groq).
+- Le banc d'évaluation réutilise exactement le même code.
 
-Dans la section **5. Tâche demandée aux participants (Tâche 6)** du sujet officiel :
-> *« Implémenter la liaison patiente : rattacher chaque nouvelle visite au profil existant par le code de la sage-femme ; proposer les correspondances possibles sans jamais créer automatiquement une patiente quand une correspondance est plausible ; offrir [Patiente 1] [Patiente 2] [Aucune, créer] [Je ne sais pas]. »*
+### Hors ligne d'abord
+Tout est stocké sur le téléphone (SQLite et photos). Le réseau ne sert qu'à l'extraction IA. Un échec n'efface jamais rien et ne remplace jamais une vraie lecture par des données inventées : le serveur renvoie une erreur et la photo reste en file.
 
-Notre application respecte scrupuleusement cette exigence :
-1. `[1. Patiente A]` & `[2. Patiente B]` : correspondances probables identifiées par l'algorithme (basé sur le numéro ou village).
-2. `[3. ➕ Créer un nouveau profil]` : crée un nouvel identifiant anonyme généré aléatoirement (`PAT-xxx`).
-3. `[4. ❓ Classer sans lier (Je ne sais pas)]` :
-   - **Pourquoi cette option existe ?** Sur le terrain, une sage-femme peut photographier une page où le code est tronqué, ou douter de l'identité de la patiente. Le cahier des charges interdit formellement d'inventer une patiente ou de forcer un rattachement incertain.
-   - **Comportement :** La fiche médicale est sauvegardée en toute sécurité dans SQLite avec `patient_id = null`. Elle apparaît dans le dossier `📄 Fiches non liées` où la sage-femme peut la retrouver, la consulter, la modifier ou la rattacher ultérieurement.
+### Multi-pages et re-numérisation
+Les pages d'un même livret sont regroupées **par patiente** (dossier patiente). Si une page est mal lue, la sage-femme corrige les champs ou **reprend la photo**, qui remplace la lecture précédente. C'est plus simple sur le terrain que de comparer deux lectures.
 
----
+### Liaison patiente
+Après validation, l'agent propose :
+- les profils proches ;
+- « créer un nouveau profil » ;
+- « je ne sais pas » (la fiche est classée dans « Fiches non liées »).
 
-## 🏆 Bonus officiels du défi implémentés
+On peut aussi **taper le code patiente écrit sur le registre** : l'agent rattache la fiche au profil qui a ce code, ou crée le profil avec ce code. Aucun profil n'est créé sans choix explicite. Les identifiants internes sont aléatoires, jamais dérivés de données personnelles.
 
-Conformément à la section **8. Bonus (facultatif)** du sujet :
-1. **Interface bilingue Français / Anglais :** Taper `lang en` ou `lang fr` (ou cliquer sur la puce de langue) bascule instantanément tout l'assistant, les invites et les boutons.
-2. **Tableau de bord épidémiologique anonymisé :** Taper `stats` ou `dashboard` agrège en temps réel les indicateurs clés (dépistage VIH/Syphilis/Hépatite C, tension artérielle moyenne, poids moyen des nouveau-nés, % césariennes vs voies basses).
-3. **Contrôle de la qualité d'image sur l'appareil :** Alerte bienveillante immédiate dans le chat si la photo capturée est sombre ou trop basse résolution avant traitement.
+### Confidentialité
+Aucun nom, nom du mari, CIN, adresse ou téléphone dans le schéma : ils ne sont ni demandés à l'IA, ni stockés dans les champs.
 
 ---
 
-## 📊 5. Évaluation de la précision (Banc de test officiel)
+## 4. Utilisation (tout se fait dans le chat)
+- `photo` ou le bouton caméra : photographier une page. Le trombone 📎 ouvre la galerie, la page de démo et la saisie manuelle.
+- `patients` : dossiers patientes, triés par modification récente, 8 par page (`suivant` / `précédent`). Depuis un document : modifier un champ, renommer, supprimer.
+- `corriger`, `confirmer`, `annuler` (annule l'action en cours et revient au menu).
+- `stats` : tableau de bord anonymisé (tension, température, VIH / syphilis, poids de naissance, césariennes).
+- `setting` : langue (FR / EN) et clé API personnelle (masquée à l'écran, conservée après `reset`).
+- `info` : liste des commandes.
 
-Le banc de test mesure l'exactitude champ par champ contre la vérité terrain :
+---
+
+## 5. Évaluation de la précision
+
 ```bash
 cd backend
-python -m evaluation.evaluate --pages 1-8 --run-name complet
+python -m evaluation.ground_truth                                        # vérité terrain depuis le PDF
+python -m evaluation.evaluate --pages 1-80 --run-name complet --sleep 4  # pages en échec réessayées à la relance
+python -m evaluation.degrade_images                                      # copies floues / inclinées / sombres
+python -m evaluation.evaluate --pages 1-80 --images ../data/degraded --run-name degrade
 ```
-- **Exactitude globale : 99.1 %**
-- **Exactitude sur les champs remplis : 98.7 %**
-- **Reconnaissance du type de page : 100.0 %** (8 types de pages sur 8)
-- **Exactitude des statuts de champs : 100.0 %**
-- **Valeurs inventées / hallucinations : 0**
-- Rapport complet détaillé dans `data/eval_runs/complet/rapport.md`.
+Le rapport (`data/eval_runs/<run>/rapport.md`) donne, par type de page, l'exactitude par champ, l'exactitude sur les seuls champs remplis, les statuts, les valeurs inventées et la part des erreurs signalées par l'agent.
+
+**Résultat mesuré sur la patiente 1 (8 pages, 465 champs, `gemini-3.5-flash-lite`)** :
+- 99,1 % d'exactitude par champ ;
+- 98,7 % sur les champs remplis ;
+- 100 % des statuts corrects ;
+- 100 % des types de page reconnus.
+
+Le passage sur les 80 pages (10 écritures) et sur les images dégradées est à compléter.
+
+Particularités du jeu de données :
+- les 129 images correspondent à 80 pages uniques (10 patientes × 8 pages), dont 44 doublons exacts, plus 5 vraies photos sans vérité terrain ;
+- pour 4 patientes, la police manuscrite n'a pas les glyphes « é » et « — » (absents du PDF **et** de l'image). L'évaluation accepte les deux lectures ;
+- le CSV de 200 lignes n'est pas lié aux 10 patientes ;
+- aucune page ne contient d'arabe.
 
 ---
 
-## 🔒 Confidentialité & Sécurité
-- **Zéro identifiant direct :** Aucun nom de femme, nom du conjoint, numéro national (CIN), téléphone ou adresse n'est jamais collecté, demandé à l'IA ou stocké dans la base locale.
-- Les identifiants patientes (`PAT-xxx`) sont générés automatiquement de façon aléatoire et anonyme.
+## 6. Limites connues
+- **Pas de chiffrement local.** La base SQLite et les photos sont stockées en clair dans le stockage privé de l'application. Il faudrait SQLCipher (development build, hors Expo Go) ou un chiffrement applicatif avec une clé dans `expo-secure-store`.
+- **La photo originale contient les identifiants imprimés sur le registre.** Elle est gardée localement (exigence du défi) et envoyée au fournisseur IA pour l'extraction. C'est acceptable avec des données synthétiques ; avec des données réelles, il faudrait un modèle hébergé localement ou un caviardage avant l'envoi.
+- **Pas d'accès par rôle à l'image, ni d'identifiant de sage-femme** enregistré avec la fiche.
+- **Statuts déclarés mais non utilisés.** Le modèle de données prévoit tout le cycle du défi, mais l'app n'utilise pas `capture`, `patiente_liee`, `synchronise`, `echec_synchronisation`, `doublon_suspecte` et `revision_manuelle_requise`. En particulier, il n'y a pas de serveur central qui recevrait les fiches validées : elles restent sur le téléphone.
+- **Une erreur définitive** (page non reconnue) est réessayée à chaque retour réseau au lieu d'être mise de côté.
+- **Écriture arabe** prise en charge par Gemini mais non mesurée, faute de données.
+- **Le contrôle de qualité d'image** est simple : il signale une photo trop petite ou trop sombre.
