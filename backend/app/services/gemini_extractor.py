@@ -37,6 +37,14 @@ class extraction_error(Exception):
     """L'extraction IA a échoué : l'appelant doit garder le record en file d'attente, pas inventer des données."""
 
 
+def is_gemini_sdk_installed() -> bool:
+    try:
+        from google import genai  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def is_gemini_configured() -> bool:
     api_key_val = settings.gemini_api_key.strip()
     return bool(api_key_val) and api_key_val.lower() != 'your_gemini_api_key_here'
@@ -69,8 +77,15 @@ async def extract_registry_from_image(
     Extrait les données structurées d'une photo de registre avec Gemini et les valide avec Pydantic.
     Lève extraction_error en cas d'échec (jamais de données de secours silencieuses).
     """
-    from google import genai
-    from google.genai import types
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as missing_sdk_error:
+        # Cas typique : uvicorn lancé avec le Python global au lieu du .venv du projet
+        raise extraction_error(
+            "Le paquet google-genai n'est pas installé dans le Python qui lance le serveur. "
+            "Activez le .venv du backend puis : pip install -r requirements.txt"
+        ) from missing_sdk_error
 
     client_instance = genai.Client(api_key=settings.gemini_api_key.strip())
 

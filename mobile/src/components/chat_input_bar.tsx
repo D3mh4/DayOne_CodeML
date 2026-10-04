@@ -1,20 +1,26 @@
 import React, { useState } from 'react';
 import { View, TextInput, TouchableOpacity } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
 interface chat_input_bar_props {
   on_send_message: (text_content: string) => void;
   on_open_camera: () => void;
+  is_attachment_open: boolean;
+  on_toggle_attachments: () => void;
+  on_input_focus?: () => void;
   placeholder?: string;
   is_disabled?: boolean;
 }
 
 /**
- * Comme WhatsApp : le bouton rond sert à photographier quand le champ est vide, à envoyer sinon.
+ * Comme WhatsApp : trombone pour le panneau photos, bouton rond = caméra quand le champ est vide, envoyer sinon.
  */
 export const ChatInputBar: React.FC<chat_input_bar_props> = ({
   on_send_message,
   on_open_camera,
+  is_attachment_open,
+  on_toggle_attachments,
+  on_input_focus,
   placeholder = 'Message',
   is_disabled = false,
 }) => {
@@ -31,16 +37,30 @@ export const ChatInputBar: React.FC<chat_input_bar_props> = ({
 
   return (
     <View className="flex-row items-end px-2 py-2">
-      <View className="flex-1 bg-white rounded-3xl px-4 py-2 mr-2 min-h-[46px] justify-center">
+      <View className="flex-1 flex-row items-end bg-white rounded-3xl pl-4 pr-2 py-1.5 mr-2 min-h-[46px]">
         <TextInput
-          className="text-[16px] text-whatsapp_dark_text max-h-24"
+          className="flex-1 text-[16px] text-whatsapp_dark_text max-h-24 py-1.5"
           placeholder={placeholder}
           placeholderTextColor="#8696A0"
           value={current_text}
           onChangeText={set_current_text}
+          onFocus={on_input_focus}
           multiline
           editable={!is_disabled}
         />
+
+        <TouchableOpacity
+          onPress={on_toggle_attachments}
+          className="p-1.5 ml-1"
+          activeOpacity={0.7}
+          accessibilityLabel={is_attachment_open ? 'Revenir au clavier' : 'Joindre une photo'}
+        >
+          {is_attachment_open ? (
+            <MaterialCommunityIcons name="keyboard-outline" size={24} color="#8696A0" />
+          ) : (
+            <Ionicons name="attach" size={24} color="#8696A0" style={{ transform: [{ rotate: '-45deg' }] }} />
+          )}
+        </TouchableOpacity>
       </View>
 
       <TouchableOpacity

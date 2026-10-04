@@ -9,18 +9,13 @@ import {
   Alert,
   FlatList,
   Image,
-  useWindowDimensions,
 } from 'react-native';
 import { CameraView, FlashMode, useCameraPermissions } from 'expo-camera';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { Asset } from 'expo-asset';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { use_gallery_photos, gallery_photo } from '../hooks/use_gallery_photos';
-
-const sample_registry_page = require('../../assets/sample_registry_page.png');
-
-const grid_columns = 3;
-const grid_gap = 2;
+import { use_gallery_photos, pick_from_system_gallery, gallery_photo } from '../hooks/use_gallery_photos';
+import { load_demo_page_uri } from '../services/demo_photo';
+import { PhotoGrid } from './photo_grid';
 
 interface camera_modal_props {
   is_visible: boolean;
@@ -50,9 +45,6 @@ export const CameraModal: React.FC<camera_modal_props> = ({
 
   // Marges de l'écran (encoche, coins arrondis, barre d'accueil iPhone)
   const safe_insets = useSafeAreaInsets();
-  const { width: screen_width } = useWindowDimensions();
-  const grid_tile_size = (screen_width - grid_gap * (grid_columns - 1)) / grid_columns;
-
   const gallery = use_gallery_photos(is_visible);
 
   const close_modal = () => {
@@ -80,22 +72,32 @@ export const CameraModal: React.FC<camera_modal_props> = ({
     }
   };
 
-  // Vraie page de registre synthétique embarquée dans l'app : fonctionne hors ligne et sur simulateur
   const handle_demo_page = async () => {
     try {
-      const [sample_asset] = await Asset.loadAsync(sample_registry_page);
-      if (!sample_asset.localUri) throw new Error('Asset sans URI locale');
-      submit_photo(sample_asset.localUri);
-    } catch (asset_error) {
-      console.warn('Impossible de charger la page de registre de démo :', asset_error);
+      submit_photo(await load_demo_page_uri());
+    } catch (demo_error) {
+      console.warn('Page de démo indisponible :', demo_error);
       Alert.alert('Erreur', 'Impossible de charger la page de démonstration.');
     }
   };
 
+  // Galerie intégrée si possible, sinon sélecteur du système (ex. Expo Go Android)
   const handle_open_gallery = async () => {
-    const selected_uri = await gallery.pick_from_library();
-    if (selected_uri) {
-      submit_photo(selected_uri);
+    if (gallery.status === 'ready') {
+      set_is_gallery_open(true);
+      return;
+    }
+    if (gallery.status === 'needs_permission') {
+      await gallery.request_permission();
+      set_is_gallery_open(true);
+      return;
+    }
+    try {
+      const picked_uri = await pick_from_system_gallery();
+      if (picked_uri) submit_photo(picked_uri);
+    } catch (picker_error) {
+      console.warn('Sélecteur de photos indisponible :', picker_error);
+      Alert.alert('Galerie', 'Impossible d’ouvrir la galerie du téléphone.');
     }
   };
 
@@ -141,10 +143,7 @@ export const CameraModal: React.FC<camera_modal_props> = ({
 
       <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
         {/* Barre du haut */}
-        <View
-          className="px-3 pb-2 flex-row justify-between items-center"
-          style={{ paddingTop: safe_insets.top + 8 }}
-        >
+        <View className="px-3 pb-2 flex-row justify-between items-center" style={{ paddingTop: safe_insets.top + 8 }}>
           <TouchableOpacity onPress={close_modal} className="p-2" accessibilityLabel="Fermer">
             <Ionicons name="close" size={28} color="#FFFFFF" />
           </TouchableOpacity>
@@ -215,40 +214,20 @@ export const CameraModal: React.FC<camera_modal_props> = ({
 
   // Galerie plein écran dans la même modale (une modale imbriquée se comporte mal sur iOS)
   const render_gallery_grid = () => (
-    <View style={StyleSheet.absoluteFill} className="bg-black">
-      <View
-        className="px-3 pb-2 flex-row items-center bg-whatsapp_teal"
-        style={{ paddingTop: safe_insets.top + 8 }}
-      >
+    <View style={StyleSheet.absoluteFill} className="bg-white">
+      <View className="px-3 pb-2 flex-row items-center bg-whatsapp_teal" style={{ paddingTop: safe_insets.top + 8 }}>
         <TouchableOpacity onPress={() => set_is_gallery_open(false)} className="p-2 mr-2" accessibilityLabel="Retour">
           <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
         </TouchableOpacity>
         <Text className="text-white text-lg font-bold">Galerie</Text>
       </View>
 
-      <FlatList
-        data={gallery.photos}
-        keyExtractor={(item) => item.id}
-        numColumns={grid_columns}
-        columnWrapperStyle={{ gap: grid_gap }}
-        contentContainerStyle={{ gap: grid_gap, paddingBottom: safe_insets.bottom }}
-        onEndReached={gallery.load_next_page}
-        onEndReachedThreshold={0.6}
-        renderItem={({ item }) => (
-          <TouchableOpacity onPress={() => submit_photo(item.uri)} activeOpacity={0.8}>
-            <Image
-              source={{ uri: item.uri }}
-              style={{ width: grid_tile_size, height: grid_tile_size }}
-              resizeMode="cover"
-              resizeMethod="resize"
-            />
-          </TouchableOpacity>
-        )}
-        ListEmptyComponent={
-          <Text className="text-white/70 text-center mt-10">
-            {gallery.has_more ? 'Chargement…' : 'Aucune photo dans la galerie.'}
-          </Text>
-        }
+      <PhotoGrid
+        photos={gallery.photos}
+        on_select_photo={submit_photo}
+        on_end_reached={gallery.load_next_page}
+        bottom_padding={safe_insets.bottom}
+        empty_text={gallery.status === 'ready' && !gallery.has_more ? 'Aucune photo dans la galerie.' : undefined}
       />
     </View>
   );

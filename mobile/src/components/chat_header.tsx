@@ -9,6 +9,7 @@ interface chat_header_props {
   is_simulated_offline?: boolean;
   pending_count?: number;
   on_toggle_network?: () => void;
+  on_retry_press?: () => void;
 }
 
 export const ChatHeader: React.FC<chat_header_props> = ({
@@ -17,6 +18,7 @@ export const ChatHeader: React.FC<chat_header_props> = ({
   is_simulated_offline = false,
   pending_count = 0,
   on_toggle_network,
+  on_retry_press,
 }) => {
   const network_label = is_online
     ? 'En ligne'
@@ -35,7 +37,14 @@ export const ChatHeader: React.FC<chat_header_props> = ({
         <MaterialCommunityIcons name="mother-nurse" size={24} color="#FFFFFF" />
       </View>
 
-      <View className="flex-1">
+      {/* Toucher le titre relance l'envoi des pages en attente */}
+      <TouchableOpacity
+        className="flex-1"
+        activeOpacity={0.7}
+        disabled={!on_retry_press || pending_count === 0}
+        onPress={on_retry_press}
+        accessibilityLabel="Réessayer l'envoi des pages en attente"
+      >
         <Text className="text-white text-base font-bold" numberOfLines={1}>
           {title}
         </Text>
@@ -47,7 +56,7 @@ export const ChatHeader: React.FC<chat_header_props> = ({
             {status_label}
           </Text>
         </View>
-      </View>
+      </TouchableOpacity>
 
       {on_toggle_network && (
         <TouchableOpacity

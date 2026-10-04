@@ -35,6 +35,13 @@
         {
           "photosPermission": "L'application accède à vos photos pour importer une page de registre déjà photographiée."
         }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "L'application accède à vos photos pour importer une page de registre déjà photographiée.",
+          "savePhotosPermission": false
+        }
       ]
     ]
   }

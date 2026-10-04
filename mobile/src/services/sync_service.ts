@@ -65,8 +65,15 @@ export const upload_and_extract_record = async (
     });
 
     if (!fetch_response.ok) {
+      // FastAPI renvoie {"detail": "..."} : on garde ce message lisible plutôt que le JSON brut
       const error_text = await fetch_response.text();
-      throw new Error(`Erreur serveur (${fetch_response.status}) : ${error_text}`);
+      let error_detail = error_text;
+      try {
+        error_detail = JSON.parse(error_text).detail ?? error_text;
+      } catch {
+        // réponse non JSON (ex. "Internal Server Error") : on garde le texte tel quel
+      }
+      throw new Error(`Erreur serveur (${fetch_response.status}) : ${error_detail}`);
     }
 
     const response_json = await fetch_response.json();

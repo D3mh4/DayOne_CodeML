@@ -9,6 +9,7 @@ from app.services.gemini_extractor import (
     extract_with_simulated_fallback,
     extraction_error,
     is_gemini_configured,
+    is_gemini_sdk_installed,
 )
 
 # Configuration du logging
@@ -43,6 +44,7 @@ async def health_check():
         'status': 'healthy',
         'service': 'dayone_codeml_backend',
         'gemini_configured': is_gemini_configured(),
+        'gemini_sdk_installed': is_gemini_sdk_installed(),
         'extraction_provider': settings.extraction_provider,
         'model_target': settings.gemini_model_name,
     }

@@ -72,5 +72,26 @@ def test_extract_registry_failure_is_not_hidden(monkeypatch):
     assert 'quota' in response.json()['detail']
 
 
+def test_missing_gemini_sdk_returns_clear_502(monkeypatch):
+    """google-genai absent (mauvais Python) : 502 avec un message qui dit quoi faire, pas une 500 brute."""
+    import builtins
+
+    monkeypatch.setattr(settings, 'extraction_provider', 'gemini')
+    monkeypatch.setattr(main_module, 'is_gemini_configured', lambda: True)
+    real_import = builtins.__import__
+
+    def import_without_genai(name, globals_dict=None, locals_dict=None, fromlist=(), level=0):
+        if name == 'google' and fromlist and 'genai' in fromlist:
+            raise ImportError("cannot import name 'genai' from 'google'")
+        return real_import(name, globals_dict, locals_dict, fromlist, level)
+
+    monkeypatch.setattr(builtins, '__import__', import_without_genai)
+    client = TestClient(app)
+
+    response = client.post('/extract_registry', files=build_dummy_upload(), data={'record_id': 'rec_y'})
+    assert response.status_code == 502
+    assert 'pip install -r requirements.txt' in response.json()['detail']
+
+
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-v']))

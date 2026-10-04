@@ -7,6 +7,8 @@ import { ChatMessageBubble } from '../components/chat_message_bubble';
 import { ChatInputBar } from '../components/chat_input_bar';
 import { CameraModal } from '../components/camera_modal';
 import { CorrectionModal } from '../components/correction_modal';
+import { AttachmentPanel } from '../components/attachment_panel';
+import { api_config } from '../config/api_config';
 import {
   chat_message,
   record_status,
@@ -45,6 +47,19 @@ const format_time = (date_obj: Date = new Date()) =>
   `${String(date_obj.getHours()).padStart(2, '0')}:${String(date_obj.getMinutes()).padStart(2, '0')}`;
 
 const to_field_label = (field_key: string) => field_key.replace(/_/g, ' ');
+
+// Message court et compréhensible pour la sage-femme (le détail technique reste dans les logs)
+const describe_sync_error = (error_message?: string) => {
+  const lower_message = (error_message ?? '').toLowerCase();
+  if (/connect|network request failed|fetch failed|délai dépassé/.test(lower_message)) {
+    return `serveur injoignable (${api_config.backend_base_url})`;
+  }
+  const server_error_match = error_message?.match(/\(5\d\d\) : ([\s\S]*)$/);
+  if (server_error_match) {
+    return `erreur du serveur IA : ${server_error_match[1]}`;
+  }
+  return error_message ?? 'erreur inconnue';
+};
 
 let message_counter = 0;
 
@@ -95,6 +110,7 @@ export const ChatScreen: React.FC = () => {
 
   // Question de suivi en cours sur un champ douteux
   const [active_question, set_active_question] = useState<pending_field_question | null>(null);
+  const [is_attachment_open, set_is_attachment_open] = useState<boolean>(false);
 
   const [messages_list, set_messages_list] = useState<chat_message[]>([
     build_message('assistant', {
@@ -172,26 +188,28 @@ export const ChatScreen: React.FC = () => {
     append_messages(build_message('assistant', { message_text: question_text + remaining_suffix }));
   };
 
-  const show_sync_result = (sync_res: sync_result_item) => {
-    if (sync_res.success && sync_res.extracted_data && sync_res.record_status) {
-      update_record_messages(sync_res.record_id, { record_status: sync_res.record_status });
-      append_messages(
-        build_record_card(
-          sync_res.record_id,
-          sync_res.record_status,
-          sync_res.extracted_data,
-          sync_res.is_simulated
-        )
-      );
-      ask_next_doubtful_field(sync_res.record_id, sync_res.extracted_data);
-    } else {
-      update_record_messages(sync_res.record_id, { record_status: 'echec_traitement' });
-      append_messages(
-        build_message('system', {
-          message_text: `L’analyse IA a échoué (${sync_res.error_message}). La photo reste sauvegardée et sera renvoyée au prochain retour du réseau.`,
-        })
-      );
-    }
+  const show_sync_success = (sync_res: sync_result_item) => {
+    if (!sync_res.extracted_data || !sync_res.record_status) return;
+    update_record_messages(sync_res.record_id, { record_status: sync_res.record_status });
+    append_messages(
+      build_record_card(sync_res.record_id, sync_res.record_status, sync_res.extracted_data, sync_res.is_simulated)
+    );
+    ask_next_doubtful_field(sync_res.record_id, sync_res.extracted_data);
+  };
+
+  // Un seul message pour tous les échecs d'une synchro (au lieu d'une bulle par photo)
+  const show_sync_failures = (failed_results: sync_result_item[]) => {
+    if (failed_results.length === 0) return;
+    failed_results.forEach((failed_item) =>
+      update_record_messages(failed_item.record_id, { record_status: 'echec_traitement' })
+    );
+    append_messages(
+      build_message('system', {
+        message_text:
+          `${failed_results.length} page(s) non analysée(s) : ${describe_sync_error(failed_results[0].error_message)}. ` +
+          'Elles restent sauvegardées sur le téléphone. Touchez « en attente IA » en haut pour réessayer.',
+      })
+    );
   };
 
   const run_sync = async () => {
@@ -206,7 +224,8 @@ export const ChatScreen: React.FC = () => {
 
     try {
       const sync_results = await sync_all_pending_records();
-      sync_results.forEach(show_sync_result);
+      sync_results.filter((sync_res) => sync_res.success).forEach(show_sync_success);
+      show_sync_failures(sync_results.filter((sync_res) => !sync_res.success));
     } catch (sync_err) {
       console.warn('Erreur lors de la synchronisation :', sync_err);
     } finally {
@@ -429,6 +448,16 @@ export const ChatScreen: React.FC = () => {
     set_is_camera_open(true);
   };
 
+  const open_camera = () => {
+    set_is_attachment_open(false);
+    set_is_camera_open(true);
+  };
+
+  const toggle_attachment_panel = () => {
+    if (!is_attachment_open) Keyboard.dismiss();
+    set_is_attachment_open((prev_open) => !prev_open);
+  };
+
   const handle_toggle_network_mode = () => {
     append_messages(
       build_message('system', {
@@ -450,6 +479,7 @@ export const ChatScreen: React.FC = () => {
         is_simulated_offline={is_simulated_offline}
         pending_count={pending_ai_count}
         on_toggle_network={handle_toggle_network_mode}
+        on_retry_press={is_online ? run_sync : undefined}
       />
 
       <KeyboardAvoidingView className="flex-1" behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -470,15 +500,29 @@ export const ChatScreen: React.FC = () => {
         />
 
         {/* Marge du bas : barre d'accueil et coins arrondis de l'iPhone (0 sur la plupart des Android) */}
-        <View style={{ paddingBottom: is_keyboard_open ? 0 : safe_insets.bottom }}>
+        <View style={{ paddingBottom: is_keyboard_open || is_attachment_open ? 0 : safe_insets.bottom }}>
           <ChatInputBar
             on_send_message={handle_send_message}
-            on_open_camera={() => set_is_camera_open(true)}
+            on_open_camera={() => open_camera()}
+            is_attachment_open={is_attachment_open}
+            on_toggle_attachments={toggle_attachment_panel}
+            on_input_focus={() => set_is_attachment_open(false)}
             placeholder={
               active_question ? `Valeur pour « ${active_question.field_label} »...` : 'Message ou photo...'
             }
           />
         </View>
+
+        {/* Panneau photos façon WhatsApp : remplace le clavier sous la barre de saisie */}
+        <AttachmentPanel
+          is_visible={is_attachment_open && !is_keyboard_open}
+          bottom_inset={safe_insets.bottom}
+          on_pick_photo={(image_uri) => {
+            set_is_attachment_open(false);
+            handle_photo_captured(image_uri);
+          }}
+          on_open_camera={() => open_camera()}
+        />
       </KeyboardAvoidingView>
 
       <CameraModal
