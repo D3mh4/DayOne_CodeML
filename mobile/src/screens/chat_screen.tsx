@@ -1,449 +1,388 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  View,
-  FlatList,
-  KeyboardAvoidingView,
-  Platform,
-  Alert,
-  StatusBar,
-} from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, FlatList, KeyboardAvoidingView, Platform, Alert, StatusBar } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import { ChatHeader } from '../components/chat_header';
 import { ChatMessageBubble } from '../components/chat_message_bubble';
 import { ChatInputBar } from '../components/chat_input_bar';
 import { CameraModal } from '../components/camera_modal';
 import { CorrectionModal } from '../components/correction_modal';
-import { chat_message, record_status, extracted_record_data } from '../types/chat_types';
+import {
+  chat_message,
+  record_status,
+  extracted_record_data,
+  doubtful_field_statuses,
+} from '../types/chat_types';
+import { db_record_row } from '../types/record_types';
 import { use_network_status } from '../hooks/use_network_status';
 import {
   get_database_connection,
   save_offline_photo_record,
+  replace_record_image,
   get_all_records,
-  get_records_by_status,
+  get_records_needing_ai,
   get_record_by_id,
   update_record_status_and_data,
   parse_record_row,
 } from '../database/record_repository';
 import {
-  upload_and_extract_record,
   sync_all_pending_records,
+  status_after_extraction,
+  sync_result_item,
 } from '../services/sync_service';
 
-interface pending_correction_question {
+interface pending_field_question {
   record_id: string;
   field_key: string;
   field_label: string;
+  read_value: string | null;
 }
+
+// Réponses qui confirment la valeur lue par l'IA au lieu de la remplacer
+const confirmation_answers = ['ok', 'oui', 'yes', 'correct', 'c bon', 'cest bon', "c'est bon"];
+
+const format_time = (date_obj: Date = new Date()) =>
+  `${String(date_obj.getHours()).padStart(2, '0')}:${String(date_obj.getMinutes()).padStart(2, '0')}`;
+
+const to_field_label = (field_key: string) => field_key.replace(/_/g, ' ');
+
+let message_counter = 0;
+
+const build_message = (
+  sender_type: chat_message['sender_type'],
+  content: Partial<chat_message>
+): chat_message => ({
+  message_id: `msg_${Date.now()}_${message_counter++}`,
+  sender_type,
+  content_type: sender_type === 'system' ? 'system_alert' : 'text',
+  created_at: format_time(),
+  is_sent: true,
+  is_delivered: true,
+  is_read: true,
+  ...content,
+});
+
+const find_doubtful_fields = (extracted_data: extracted_record_data) =>
+  Object.entries(extracted_data).filter(
+    ([_, field_val]) => field_val && doubtful_field_statuses.includes(field_val.statut)
+  );
+
+const build_record_card = (
+  record_id: string,
+  record_status_val: record_status,
+  extracted_data: extracted_record_data,
+  is_simulated = false
+): chat_message =>
+  build_message('assistant', {
+    content_type: 'record_card',
+    record_id,
+    record_status: record_status_val,
+    extracted_data,
+    message_text: is_simulated
+      ? '⚠️ Données SIMULÉES (backend en mode mock, pas de vraie IA) :'
+      : '📋 Voici ce que j’ai lu sur la page :',
+  });
 
 export const ChatScreen: React.FC = () => {
   const [is_camera_open, set_is_camera_open] = useState<boolean>(false);
-  const [is_db_ready, set_is_db_ready] = useState<boolean>(false);
-  const [is_syncing, set_is_syncing] = useState<boolean>(false);
+  const [retake_record_id, set_retake_record_id] = useState<string | null>(null);
+  const [pending_ai_count, set_pending_ai_count] = useState<number>(0);
 
   // Gestion de la modale de correction
   const [is_correction_modal_open, set_is_correction_modal_open] = useState<boolean>(false);
   const [editing_record_id, set_editing_record_id] = useState<string | null>(null);
-  const [editing_patient_id, set_editing_patient_id] = useState<string | undefined>(undefined);
   const [editing_initial_data, set_editing_initial_data] = useState<extracted_record_data | null>(null);
 
-  // Question conversationnelle en cours si un champ est illisible
-  const [active_illegible_question, set_active_illegible_question] =
-    useState<pending_correction_question | null>(null);
+  // Question de suivi en cours sur un champ douteux
+  const [active_question, set_active_question] = useState<pending_field_question | null>(null);
+
+  const [messages_list, set_messages_list] = useState<chat_message[]>([
+    build_message('assistant', {
+      message_id: 'msg_welcome',
+      message_text:
+        '👋 Bonjour ! Photographiez une page du registre. Elle est gardée sur le téléphone et analysée dès que le réseau revient. Je vous dirai quand je ne suis pas sûr d’une valeur.',
+    }),
+  ]);
 
   const flat_list_ref = useRef<FlatList>(null);
 
-  // Fonction utilitaire pour horodater
-  const get_current_time_str = () => {
-    const now = new Date();
-    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const scroll_to_end = () => {
+    setTimeout(() => flat_list_ref.current?.scrollToEnd({ animated: true }), 120);
   };
 
-  // Traitement d'un résultat d'extraction pour le chat
-  const handle_processed_extraction = (
-    record_id: string,
-    patient_id: string | null | undefined,
-    extracted_data: extracted_record_data
-  ) => {
-    const time_str = get_current_time_str();
+  const append_messages = (...new_messages: chat_message[]) => {
+    set_messages_list((prev) => [...prev, ...new_messages]);
+    scroll_to_end();
+  };
 
-    // 1. Bulle de résultat IA avec boutons interactifs
-    const ai_result_bubble: chat_message = {
-      message_id: `msg_ai_result_${record_id}`,
-      sender_type: 'assistant',
-      content_type: 'record_card',
-      record_id: record_id,
-      patient_id: patient_id ?? undefined,
-      record_status: 'traite_ia',
-      message_text: `📋 Données extraites par l'IA pour le dossier ${patient_id || record_id} :`,
-      extracted_data: extracted_data,
-      created_at: time_str,
-      is_sent: true,
-      is_delivered: true,
-      is_read: true,
-    };
-
-    const new_messages_to_append: chat_message[] = [ai_result_bubble];
-
-    // 2. Détection des champs illisibles et génération de question ciblée
-    const illegible_entry = Object.entries(extracted_data).find(
-      ([_, field_obj]) => field_obj?.statut === 'illisible'
+  // Met à jour toutes les bulles liées à un record (statut, données)
+  const update_record_messages = (record_id: string, changes: Partial<chat_message>) => {
+    set_messages_list((prev) =>
+      prev.map((msg) => (msg.record_id === record_id ? { ...msg, ...changes } : msg))
     );
+  };
 
-    if (illegible_entry) {
-      const [field_key] = illegible_entry;
-      const field_label_formatted = field_key.replace(/_/g, ' ');
+  const refresh_pending_count = async () => {
+    const pending_rows = await get_records_needing_ai();
+    set_pending_ai_count(pending_rows.length);
+  };
 
-      const targeted_question_bubble: chat_message = {
-        message_id: `msg_ask_${record_id}_${field_key}`,
-        sender_type: 'assistant',
-        content_type: 'text',
-        message_text: `⚠️ Le champ "${field_label_formatted}" est illisible sur la photo du registre.\n\nPouvez-vous saisir directement sa valeur dans le chat ?`,
-        created_at: time_str,
-        is_sent: true,
-        is_delivered: true,
-        is_read: true,
-      };
+  // Pose la question pour le prochain champ douteux, ou annonce que tout est vérifié
+  const ask_next_doubtful_field = (record_id: string, extracted_data: extracted_record_data) => {
+    const remaining_fields = find_doubtful_fields(extracted_data);
 
-      new_messages_to_append.push(targeted_question_bubble);
-      set_active_illegible_question({
-        record_id: record_id,
-        field_key: field_key,
-        field_label: field_label_formatted,
-      });
+    if (remaining_fields.length === 0) {
+      set_active_question(null);
+      append_messages(
+        build_message('assistant', {
+          message_text: '✅ Tous les champs douteux sont vérifiés. Vous pouvez confirmer le dossier.',
+        })
+      );
+      return;
     }
 
-    set_messages_list((prev) => [...prev, ...new_messages_to_append]);
-    setTimeout(() => {
-      flat_list_ref.current?.scrollToEnd({ animated: true });
-    }, 120);
+    const [field_key, field_val] = remaining_fields[0];
+    const field_label = to_field_label(field_key);
+    const read_value = field_val?.valeur !== null && field_val?.valeur !== undefined ? String(field_val.valeur) : null;
+    const confidence_pct = Math.round((field_val?.confiance ?? 0) * 100);
+
+    const question_text =
+      field_val?.statut === 'illisible' || read_value === null
+        ? `❓ Je n’arrive pas à lire « ${field_label} ». Pouvez-vous taper la valeur écrite sur le registre ?`
+        : `🤔 Pour « ${field_label} » j’ai lu « ${read_value} », mais je n’en suis sûr qu’à ${confidence_pct} %. Tapez la bonne valeur, ou « ok » si c’est correct.`;
+
+    const remaining_suffix =
+      remaining_fields.length > 1 ? `\n(${remaining_fields.length - 1} autre(s) champ(s) à vérifier ensuite)` : '';
+
+    set_active_question({ record_id, field_key, field_label, read_value });
+    append_messages(build_message('assistant', { message_text: question_text + remaining_suffix }));
   };
 
-  // Déclencheur de synchronisation automatique au retour du réseau
-  const handle_network_restored = useCallback(async () => {
-    const pending_records = await get_records_by_status('en_attente_ia');
-    if (pending_records.length === 0) return;
+  const show_sync_result = (sync_res: sync_result_item) => {
+    if (sync_res.success && sync_res.extracted_data && sync_res.record_status) {
+      update_record_messages(sync_res.record_id, { record_status: sync_res.record_status });
+      append_messages(
+        build_record_card(
+          sync_res.record_id,
+          sync_res.record_status,
+          sync_res.extracted_data,
+          sync_res.is_simulated
+        )
+      );
+      ask_next_doubtful_field(sync_res.record_id, sync_res.extracted_data);
+    } else {
+      update_record_messages(sync_res.record_id, { record_status: 'echec_traitement' });
+      append_messages(
+        build_message('system', {
+          message_text: `L’analyse IA a échoué (${sync_res.error_message}). La photo reste sauvegardée et sera renvoyée au prochain retour du réseau.`,
+        })
+      );
+    }
+  };
 
-    const time_str = `${String(new Date().getHours()).padStart(2, '0')}:${String(
-      new Date().getMinutes()
-    ).padStart(2, '0')}`;
+  const run_sync = async () => {
+    const pending_rows = await get_records_needing_ai();
+    if (pending_rows.length === 0) return;
 
-    const sync_start_alert: chat_message = {
-      message_id: `msg_sync_start_${Date.now()}`,
-      sender_type: 'system',
-      content_type: 'system_alert',
-      message_text: `🌐 Connexion rétablie ! Synchronisation de ${pending_records.length} registre(s) avec l'API Gemini...`,
-      created_at: time_str,
-      is_sent: true,
-      is_delivered: true,
-      is_read: true,
-    };
-
-    set_messages_list((prev) => [...prev, sync_start_alert]);
-    set_is_syncing(true);
+    append_messages(
+      build_message('system', {
+        message_text: `🌐 Envoi de ${pending_rows.length} page(s) en attente pour analyse IA...`,
+      })
+    );
 
     try {
       const sync_results = await sync_all_pending_records();
-
-      for (const res of sync_results) {
-        if (res.success && res.extracted_data) {
-          handle_processed_extraction(
-            res.record_id,
-            res.patient_id,
-            res.extracted_data
-          );
-        }
-      }
+      sync_results.forEach(show_sync_result);
     } catch (sync_err) {
-      console.warn('Erreur lors de la synchronisation au retour réseau :', sync_err);
+      console.warn('Erreur lors de la synchronisation :', sync_err);
     } finally {
-      set_is_syncing(false);
+      await refresh_pending_count();
     }
-  }, []);
+  };
 
-  // Hook réseau
-  const {
-    is_connected,
-    is_internet_reachable,
-    is_simulated_offline,
-    toggle_network_simulation,
-  } = use_network_status(handle_network_restored);
+  const { is_online, is_simulated_offline, toggle_network_simulation } = use_network_status(run_sync);
 
-  // Messages initiaux
-  const [messages_list, set_messages_list] = useState<chat_message[]>([
-    {
-      message_id: 'msg_welcome',
-      sender_type: 'assistant',
-      content_type: 'text',
-      message_text:
-        '👋 Bonjour ! Je suis votre assistant de numérisation de registres de maternité DayOne.\n\nPrenez une photo de votre registre papier. Les données sont sauvegardées en local (SQLite) et analysées dès que le réseau est disponible.',
-      created_at: '10:00',
-      is_sent: true,
-      is_delivered: true,
-      is_read: true,
-    },
-  ]);
-
-  // Initialisation de la base SQLite et chargement
+  // Initialisation SQLite, rechargement de l'historique, puis envoi de ce qui attend si on est en ligne
   useEffect(() => {
     const initialize_sqlite_and_load_data = async () => {
       try {
         await get_database_connection();
-        set_is_db_ready(true);
-
         const stored_records = await get_all_records();
-        if (stored_records.length > 0) {
-          const loaded_messages: chat_message[] = [];
+        const loaded_messages: chat_message[] = [];
 
-          for (const row of stored_records.reverse()) {
-            const parsed_row = parse_record_row(row);
-            const date_obj = new Date(row.created_at);
-            const time_str = `${String(date_obj.getHours()).padStart(2, '0')}:${String(
-              date_obj.getMinutes()
-            ).padStart(2, '0')}`;
+        for (const row of [...stored_records].reverse()) {
+          const parsed_row = parse_record_row(row);
+          const time_str = format_time(new Date(row.created_at));
 
-            // Message photo utilisateur
-            loaded_messages.push({
-              message_id: `msg_db_photo_${row.id}`,
-              sender_type: 'user',
+          loaded_messages.push(
+            build_message('user', {
+              message_id: `msg_photo_${row.id}`,
               content_type: 'image',
               image_uri: row.image_uri,
               record_id: row.id,
-              patient_id: row.patient_id ?? undefined,
               record_status: row.status,
-              message_text: `Registre patient ${row.patient_id ?? 'Sans ID'}`,
               created_at: time_str,
-              is_sent: true,
-              is_delivered: true,
-              is_read: true,
-            });
-
-            // Si déjà traité ou validé, ajouter la carte de données IA
-            if (parsed_row.extracted_data && (row.status === 'traite_ia' || row.status === 'valide')) {
-              loaded_messages.push({
-                message_id: `msg_db_data_${row.id}`,
-                sender_type: 'assistant',
-                content_type: 'record_card',
-                record_id: row.id,
-                patient_id: row.patient_id ?? undefined,
-                record_status: row.status,
-                extracted_data: parsed_row.extracted_data,
-                message_text: `Dossier ${row.patient_id || row.id} (${row.status === 'valide' ? 'Validé' : 'Traité par IA'})`,
-                created_at: time_str,
-                is_sent: true,
-                is_delivered: true,
-                is_read: true,
-              });
-            }
-          }
-
-          set_messages_list((prev_messages) => [
-            prev_messages[0],
-            ...loaded_messages,
-          ]);
-        }
-      } catch (db_error) {
-        console.error('Erreur lors de l’initialisation SQLite :', db_error);
-      }
-    };
-
-    initialize_sqlite_and_load_data();
-  }, []);
-
-  // Envoi d'un message texte par l'utilisateur
-  const handle_send_message = async (text_content: string) => {
-    const formatted_time = get_current_time_str();
-
-    const user_msg: chat_message = {
-      message_id: `msg_${Date.now()}`,
-      sender_type: 'user',
-      content_type: 'text',
-      message_text: text_content,
-      created_at: formatted_time,
-      is_sent: true,
-      is_delivered: true,
-      is_read: true,
-    };
-
-    set_messages_list((prev) => [...prev, user_msg]);
-
-    // Si une question sur un champ illisible était en attente, intégrer la réponse !
-    if (active_illegible_question) {
-      const { record_id, field_key, field_label } = active_illegible_question;
-
-      try {
-        const target_record = await get_record_by_id(record_id);
-        if (target_record && target_record.extracted_data) {
-          const current_data: extracted_record_data = JSON.parse(target_record.extracted_data);
-
-          // Mise à jour du champ
-          current_data[field_key] = {
-            valeur: text_content.trim(),
-            confiance: 1.0,
-            statut: 'connu',
-          };
-
-          await update_record_status_and_data(record_id, 'traite_ia', current_data);
-
-          // Mise à jour visuelle des messages existants
-          set_messages_list((prev) =>
-            prev.map((msg) =>
-              msg.record_id === record_id && msg.content_type === 'record_card'
-                ? { ...msg, extracted_data: current_data }
-                : msg
-            )
+            })
           );
 
-          // Confirmation par le bot
-          setTimeout(() => {
-            const bot_ack: chat_message = {
-              message_id: `msg_ack_${Date.now()}`,
-              sender_type: 'assistant',
-              content_type: 'text',
-              message_text: `✅ Merci ! Le champ "${field_label}" a été enregistré avec la valeur : "${text_content.trim()}". Vous pouvez maintenant confirmer le dossier.`,
-              created_at: get_current_time_str(),
-              is_sent: true,
-              is_delivered: true,
-              is_read: true,
-            };
-            set_messages_list((prev) => [...prev, bot_ack]);
-            set_active_illegible_question(null);
-            flat_list_ref.current?.scrollToEnd({ animated: true });
-          }, 300);
-        }
-      } catch (err) {
-        console.warn('Erreur mise à jour champ illisible :', err);
-      }
-    }
-
-    setTimeout(() => {
-      flat_list_ref.current?.scrollToEnd({ animated: true });
-    }, 100);
-  };
-
-  // Capture photo
-  const handle_photo_captured = async (captured_image_uri: string) => {
-    const formatted_time = get_current_time_str();
-    const generated_patient_id = `PAT-${Math.floor(1000 + Math.random() * 9000)}`;
-
-    try {
-      // 1. Sauvegarde SQLite initiale avec statut 'en_attente_ia'
-      const saved_db_record = await save_offline_photo_record({
-        source_image_uri: captured_image_uri,
-        patient_id: generated_patient_id,
-      });
-
-      // 2. Message photo
-      const new_photo_message: chat_message = {
-        message_id: `msg_photo_${saved_db_record.id}`,
-        sender_type: 'user',
-        content_type: 'image',
-        image_uri: saved_db_record.image_uri,
-        record_id: saved_db_record.id,
-        patient_id: saved_db_record.patient_id ?? undefined,
-        record_status: saved_db_record.status,
-        message_text: `Registre patient ${saved_db_record.patient_id}`,
-        created_at: formatted_time,
-        is_sent: true,
-        is_delivered: false,
-        is_read: false,
-      };
-
-      const is_offline = !is_connected || !is_internet_reachable;
-
-      if (is_offline) {
-        // Enregistrement hors ligne : afficher la notification obligatoire
-        const offline_notice: chat_message = {
-          message_id: `msg_sys_${Date.now()}`,
-          sender_type: 'system',
-          content_type: 'system_alert',
-          message_text: 'Photo capturée, en attente de réseau...',
-          created_at: formatted_time,
-          is_sent: true,
-          is_delivered: true,
-          is_read: true,
-        };
-
-        set_messages_list((prev) => [...prev, new_photo_message, offline_notice]);
-      } else {
-        // Appareil en ligne : envoi direct au backend FastAPI
-        const online_notice: chat_message = {
-          message_id: `msg_sys_${Date.now()}`,
-          sender_type: 'system',
-          content_type: 'system_alert',
-          message_text: 'Photo enregistrée en local. Envoi au backend FastAPI pour analyse IA...',
-          created_at: formatted_time,
-          is_sent: true,
-          is_delivered: true,
-          is_read: true,
-        };
-
-        set_messages_list((prev) => [...prev, new_photo_message, online_notice]);
-
-        // Extraction immédiate
-        setTimeout(async () => {
-          const sync_res = await upload_and_extract_record(saved_db_record);
-          if (sync_res.success && sync_res.extracted_data) {
-            handle_processed_extraction(
-              sync_res.record_id,
-              sync_res.patient_id,
-              sync_res.extracted_data
+          if (parsed_row.extracted_data) {
+            loaded_messages.push({
+              ...build_record_card(row.id, row.status, parsed_row.extracted_data),
+              created_at: time_str,
+            });
+          } else if (row.status === 'echec_traitement') {
+            loaded_messages.push(
+              build_message('system', {
+                message_text: `Échec de l’analyse IA : ${row.last_error ?? 'raison inconnue'}. Réessai au retour du réseau.`,
+                created_at: time_str,
+              })
             );
           }
-        }, 500);
+        }
+
+        set_messages_list((prev_messages) => [prev_messages[0], ...loaded_messages]);
+        await refresh_pending_count();
+      } catch (db_error) {
+        console.error('Erreur lors de l’initialisation SQLite :', db_error);
+        Alert.alert('Erreur', 'Impossible d’ouvrir la base locale.');
       }
+    };
 
-      setTimeout(() => {
-        flat_list_ref.current?.scrollToEnd({ animated: true });
-      }, 100);
-    } catch (save_error) {
-      console.error('Erreur lors de la sauvegarde :', save_error);
-      Alert.alert('Erreur', 'Impossible de sauvegarder la photo.');
-    }
-  };
+    initialize_sqlite_and_load_data()
+      .then(() => NetInfo.fetch())
+      .then((net_state) => {
+        if (net_state.isConnected && net_state.isInternetReachable !== false) run_sync();
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Bouton interactif 1 : [Confirmer]
-  const handle_confirm_record = async (record_id: string) => {
+  // Réponse texte de la sage-femme
+  const handle_send_message = async (text_content: string) => {
+    append_messages(build_message('user', { message_text: text_content }));
+
+    if (!active_question) return;
+
+    const { record_id, field_key, field_label, read_value } = active_question;
+
     try {
-      await update_record_status_and_data(record_id, 'valide');
+      const target_record = await get_record_by_id(record_id);
+      if (!target_record?.extracted_data) return;
 
-      // Mettre à jour l'état du message dans le fil
+      const current_data: extracted_record_data = JSON.parse(target_record.extracted_data);
+      const trimmed_answer = text_content.trim();
+      const is_confirmation =
+        read_value !== null && confirmation_answers.includes(trimmed_answer.toLowerCase());
+      const final_value = is_confirmation ? read_value : trimmed_answer;
+
+      current_data[field_key] = { valeur: final_value, confiance: 1.0, statut: 'connu' };
+
+      const next_status = status_after_extraction(current_data);
+      await update_record_status_and_data(record_id, next_status, current_data);
       set_messages_list((prev) =>
-        prev.map((item) =>
-          item.record_id === record_id
-            ? { ...item, record_status: 'valide' as record_status }
-            : item
+        prev.map((msg) =>
+          msg.record_id === record_id && msg.content_type === 'record_card'
+            ? { ...msg, extracted_data: current_data, record_status: next_status }
+            : msg
         )
       );
 
-      const confirm_ack_msg: chat_message = {
-        message_id: `msg_conf_${Date.now()}`,
-        sender_type: 'assistant',
-        content_type: 'text',
-        message_text: `✅ Dossier ${record_id} validé avec succès ! Les données sont archivées et certifiées conformes.`,
-        created_at: get_current_time_str(),
-        is_sent: true,
-        is_delivered: true,
-        is_read: true,
-      };
+      append_messages(
+        build_message('assistant', {
+          message_text: `👍 « ${field_label} » = « ${final_value} » enregistré.`,
+        })
+      );
+      ask_next_doubtful_field(record_id, current_data);
+    } catch (err) {
+      console.warn('Erreur mise à jour du champ :', err);
+    }
+  };
 
-      set_messages_list((prev) => [...prev, confirm_ack_msg]);
-      setTimeout(() => {
-        flat_list_ref.current?.scrollToEnd({ animated: true });
-      }, 100);
+  // Capture photo (nouvelle page, ou reprise d'une page existante)
+  const handle_photo_captured = async (captured_image_uri: string) => {
+    try {
+      let saved_db_record: db_record_row;
+
+      if (retake_record_id) {
+        saved_db_record = await replace_record_image(retake_record_id, captured_image_uri);
+        set_retake_record_id(null);
+        if (active_question?.record_id === retake_record_id) set_active_question(null);
+        // L'ancienne carte de résultat n'est plus valable : on la retire, la photo affichée est remplacée
+        set_messages_list((prev) =>
+          prev
+            .filter((msg) => !(msg.record_id === saved_db_record.id && msg.content_type === 'record_card'))
+            .map((msg) =>
+              msg.record_id === saved_db_record.id
+                ? { ...msg, record_status: saved_db_record.status, image_uri: saved_db_record.image_uri }
+                : msg
+            )
+        );
+      } else {
+        // Pas d'identifiant patiente inventé : la liaison par code sage-femme se fait après validation
+        saved_db_record = await save_offline_photo_record({ source_image_uri: captured_image_uri });
+        append_messages(
+          build_message('user', {
+            message_id: `msg_photo_${saved_db_record.id}`,
+            content_type: 'image',
+            image_uri: saved_db_record.image_uri,
+            record_id: saved_db_record.id,
+            record_status: saved_db_record.status,
+            is_delivered: false,
+            is_read: false,
+          })
+        );
+      }
+
+      await refresh_pending_count();
+
+      if (is_online) {
+        run_sync();
+      } else {
+        append_messages(
+          build_message('system', {
+            message_text: '📴 Photo sauvegardée sur le téléphone. Elle sera analysée au retour du réseau.',
+          })
+        );
+      }
+    } catch (save_error) {
+      console.error('Erreur lors de la sauvegarde :', save_error);
+      set_retake_record_id(null);
+      Alert.alert('Erreur', 'Impossible de sauvegarder la photo. Veuillez réessayer.');
+    }
+  };
+
+  // [Confirmer] : refusé tant qu'il reste des champs douteux
+  const handle_confirm_record = async (record_id: string) => {
+    try {
+      const target_record = await get_record_by_id(record_id);
+      const parsed_row = target_record ? parse_record_row(target_record) : null;
+      if (!parsed_row?.extracted_data) return;
+
+      const remaining_fields = find_doubtful_fields(parsed_row.extracted_data);
+      if (remaining_fields.length > 0) {
+        append_messages(
+          build_message('assistant', {
+            message_text: `Je ne peux pas encore valider : ${remaining_fields.length} champ(s) restent douteux.`,
+          })
+        );
+        ask_next_doubtful_field(record_id, parsed_row.extracted_data);
+        return;
+      }
+
+      await update_record_status_and_data(record_id, 'valide');
+      update_record_messages(record_id, { record_status: 'valide' });
+      append_messages(build_message('assistant', { message_text: '✅ Dossier validé.' }));
     } catch (update_error) {
       console.error('Erreur de validation :', update_error);
       Alert.alert('Erreur', 'Impossible de valider le dossier.');
     }
   };
 
-  // Bouton interactif 2 : [Corriger]
+  // [Corriger]
   const handle_correct_record = async (record_id: string) => {
     try {
       const target_record = await get_record_by_id(record_id);
       if (target_record) {
-        const parsed_row = parse_record_row(target_record);
         set_editing_record_id(record_id);
-        set_editing_patient_id(target_record.patient_id ?? undefined);
-        set_editing_initial_data(parsed_row.extracted_data);
+        set_editing_initial_data(parse_record_row(target_record).extracted_data);
         set_is_correction_modal_open(true);
       }
     } catch (err) {
@@ -451,86 +390,54 @@ export const ChatScreen: React.FC = () => {
     }
   };
 
-  // Enregistrement des corrections manuelles depuis la modal
-  const handle_save_corrections = async (
-    record_id: string,
-    updated_data: extracted_record_data
-  ) => {
+  const handle_save_corrections = async (record_id: string, updated_data: extracted_record_data) => {
     try {
-      await update_record_status_and_data(record_id, 'traite_ia', updated_data);
-
+      const next_status = status_after_extraction(updated_data);
+      await update_record_status_and_data(record_id, next_status, updated_data);
       set_messages_list((prev) =>
         prev.map((msg) =>
           msg.record_id === record_id && msg.content_type === 'record_card'
-            ? { ...msg, extracted_data: updated_data }
+            ? { ...msg, extracted_data: updated_data, record_status: next_status }
             : msg
         )
       );
-
-      const ack_msg: chat_message = {
-        message_id: `msg_corr_ack_${Date.now()}`,
-        sender_type: 'assistant',
-        content_type: 'text',
-        message_text: `✏️ Corrections enregistrées pour le dossier ${record_id}. Vous pouvez maintenant le confirmer.`,
-        created_at: get_current_time_str(),
-        is_sent: true,
-        is_delivered: true,
-        is_read: true,
-      };
-
-      set_messages_list((prev) => [...prev, ack_msg]);
-      setTimeout(() => {
-        flat_list_ref.current?.scrollToEnd({ animated: true });
-      }, 100);
+      append_messages(build_message('assistant', { message_text: '✏️ Corrections enregistrées.' }));
+      ask_next_doubtful_field(record_id, updated_data);
     } catch (err) {
       console.error('Erreur sauvegarde corrections :', err);
     }
   };
 
-  // Bouton interactif 3 : [Reprendre]
-  const handle_retake_record = async (record_id: string) => {
-    Alert.alert(
-      'Reprendre la photo',
-      `Souhaitez-vous reprendre une nouvelle photo pour remplacer le dossier ${record_id} ?`,
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Ouvrir l\'appareil photo',
-          onPress: () => set_is_camera_open(true),
-        },
-      ]
-    );
+  // [Reprendre] : la nouvelle photo remplace celle de ce record
+  const handle_retake_record = (record_id: string) => {
+    set_retake_record_id(record_id);
+    set_is_camera_open(true);
   };
 
-  // Bascule du mode réseau (manuel pour démo / tests)
   const handle_toggle_network_mode = () => {
-    toggle_network_simulation();
-    const next_offline = !is_simulated_offline;
-    Alert.alert(
-      'Mode Réseau',
-      next_offline
-        ? 'Mode HORS LIGNE activé. Les photos prises afficheront "Photo capturée, en attente de réseau...".'
-        : 'Mode EN LIGNE rétabli. Synchronisation automatique déclenchée vers le backend FastAPI.'
+    append_messages(
+      build_message('system', {
+        message_text: is_simulated_offline
+          ? 'Mode hors ligne simulé désactivé.'
+          : 'Mode hors ligne simulé activé : les photos restent sur le téléphone.',
+      })
     );
+    toggle_network_simulation();
   };
 
   return (
     <View className="flex-1 bg-whatsapp_bg">
       <StatusBar barStyle="light-content" backgroundColor="#075E54" />
 
-      {/* En-tête WhatsApp */}
       <ChatHeader
         title="Assistant Registre Maternité"
-        is_online={is_connected && is_internet_reachable}
-        on_camera_press={() => set_is_camera_open(true)}
-        on_sync_press={handle_toggle_network_mode}
+        is_online={is_online}
+        is_simulated_offline={is_simulated_offline}
+        pending_count={pending_ai_count}
+        on_toggle_network={handle_toggle_network_mode}
       />
 
-      {/* Fil de discussion */}
-      <KeyboardAvoidingView
-        className="flex-1"
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardAvoidingView className="flex-1" behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <FlatList
           ref={flat_list_ref}
           data={messages_list}
@@ -547,30 +454,27 @@ export const ChatScreen: React.FC = () => {
           showsVerticalScrollIndicator={false}
         />
 
-        {/* Barre de saisie WhatsApp avec appareil photo */}
         <ChatInputBar
           on_send_message={handle_send_message}
           on_open_camera={() => set_is_camera_open(true)}
           placeholder={
-            active_illegible_question
-              ? `Répondez pour le champ "${active_illegible_question.field_label}"...`
-              : 'Tapez un message ou capturez...'
+            active_question ? `Valeur pour « ${active_question.field_label} »...` : 'Message ou photo...'
           }
         />
       </KeyboardAvoidingView>
 
-      {/* Modale Appareil Photo */}
       <CameraModal
         is_visible={is_camera_open}
-        on_close={() => set_is_camera_open(false)}
+        on_close={() => {
+          set_is_camera_open(false);
+          set_retake_record_id(null);
+        }}
         on_photo_captured={handle_photo_captured}
       />
 
-      {/* Modale de Correction manuelle */}
       <CorrectionModal
         is_visible={is_correction_modal_open}
         record_id={editing_record_id}
-        patient_id={editing_patient_id}
         initial_data={editing_initial_data}
         on_close={() => set_is_correction_modal_open(false)}
         on_save_corrections={handle_save_corrections}

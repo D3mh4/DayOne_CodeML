@@ -1,9 +1,44 @@
-export type record_status = 
+// Cycle de vie d'un enregistrement (exigé par le défi) + états d'échec
+export type record_status =
   | 'capture'
   | 'en_attente_ia'
   | 'traite_ia'
   | 'a_reviser'
-  | 'valide';
+  | 'valide'
+  | 'patiente_liee'
+  | 'enregistre'
+  | 'synchronise'
+  | 'echec_traitement'
+  | 'echec_synchronisation'
+  | 'doublon_suspecte'
+  | 'revision_manuelle_requise';
+
+export const all_record_statuses: record_status[] = [
+  'capture',
+  'en_attente_ia',
+  'traite_ia',
+  'a_reviser',
+  'valide',
+  'patiente_liee',
+  'enregistre',
+  'synchronise',
+  'echec_traitement',
+  'echec_synchronisation',
+  'doublon_suspecte',
+  'revision_manuelle_requise',
+];
+
+// Statut par champ (exigé par le défi)
+export type field_status =
+  | 'connu'
+  | 'inconnu'
+  | 'non_fourni'
+  | 'illisible'
+  | 'non_applicable'
+  | 'a_reviser';
+
+// Champs pour lesquels l'agent doit poser une question de suivi
+export const doubtful_field_statuses: field_status[] = ['illisible', 'a_reviser'];
 
 export type message_sender_type = 'user' | 'assistant' | 'system';
 
@@ -12,16 +47,10 @@ export type message_content_type = 'text' | 'image' | 'record_card' | 'system_al
 export interface extracted_field_value {
   valeur: string | number | null;
   confiance: number;
-  statut: 'connu' | 'inconnu' | 'illisible';
+  statut: field_status;
 }
 
 export interface extracted_record_data {
-  numero_registre?: extracted_field_value;
-  nom_patiente?: extracted_field_value;
-  age?: extracted_field_value;
-  poids_bebe?: extracted_field_value;
-  date_accouchement?: extracted_field_value;
-  observations?: extracted_field_value;
   [cle: string]: extracted_field_value | undefined;
 }
 
@@ -40,4 +69,3 @@ export interface chat_message {
   is_delivered: boolean;
   is_read: boolean;
 }
-

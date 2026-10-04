@@ -8,8 +8,11 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
-import { CameraView, CameraType, FlashMode, useCameraPermissions } from 'expo-camera';
+import { CameraView, FlashMode, useCameraPermissions } from 'expo-camera';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Asset } from 'expo-asset';
+
+const sample_registry_page = require('../../assets/sample_registry_page.png');
 
 interface camera_modal_props {
   is_visible: boolean;
@@ -23,7 +26,6 @@ export const CameraModal: React.FC<camera_modal_props> = ({
   on_photo_captured,
 }) => {
   const [camera_permission, request_camera_permission] = useCameraPermissions();
-  const [facing_direction, set_facing_direction] = useState<CameraType>('back');
   const [flash_mode, set_flash_mode] = useState<FlashMode>('off');
   const [is_taking_photo, set_is_taking_photo] = useState<boolean>(false);
   const camera_ref = useRef<CameraView>(null);
@@ -60,17 +62,19 @@ export const CameraModal: React.FC<camera_modal_props> = ({
     }
   };
 
-  const handle_simulate_photo = () => {
-    const sample_image =
-      'https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?w=800&auto=format&fit=crop&q=80';
-    on_photo_captured(sample_image);
-    on_close();
-  };
-
-  const toggle_facing = () => {
-    set_facing_direction((current_facing) =>
-      current_facing === 'back' ? 'front' : 'back'
-    );
+  // Vraie page de registre synthétique embarquée dans l'app : fonctionne hors ligne et sur émulateur
+  const handle_simulate_photo = async () => {
+    try {
+      const [sample_asset] = await Asset.loadAsync(sample_registry_page);
+      if (!sample_asset.localUri) {
+        throw new Error('Asset sans URI locale');
+      }
+      on_photo_captured(sample_asset.localUri);
+      on_close();
+    } catch (asset_error) {
+      console.warn('Impossible de charger la page de registre de démo :', asset_error);
+      Alert.alert('Erreur', 'Impossible de charger la photo de démonstration.');
+    }
   };
 
   const toggle_flash = () => {
@@ -120,7 +124,7 @@ export const CameraModal: React.FC<camera_modal_props> = ({
             <CameraView
               ref={camera_ref}
               style={StyleSheet.absoluteFill}
-              facing={facing_direction}
+              facing="back"
               flash={flash_mode}
             >
               {/* Barre supérieure : retour et flash */}
@@ -187,14 +191,8 @@ export const CameraModal: React.FC<camera_modal_props> = ({
                   )}
                 </TouchableOpacity>
 
-                {/* Bouton bascule avant / arrière */}
-                <TouchableOpacity
-                  onPress={toggle_facing}
-                  className="w-12 h-12 rounded-full bg-white/20 items-center justify-center"
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="camera-reverse-outline" size={26} color="#FFFFFF" />
-                </TouchableOpacity>
+                {/* Espace pour garder le déclencheur centré */}
+                <View className="w-12 h-12" />
               </View>
             </CameraView>
           </View>

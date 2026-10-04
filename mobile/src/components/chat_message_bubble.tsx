@@ -1,7 +1,12 @@
 import React from 'react';
 import { View, Text, Image, TouchableOpacity } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { chat_message, record_status } from '../types/chat_types';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import {
+  chat_message,
+  record_status,
+  field_status,
+  doubtful_field_statuses,
+} from '../types/chat_types';
 
 interface chat_message_bubble_props {
   message: chat_message;
@@ -10,22 +15,40 @@ interface chat_message_bubble_props {
   on_retake_record?: (record_id: string) => void;
 }
 
-const get_status_badge = (status?: record_status) => {
-  switch (status) {
-    case 'capture':
-      return { label: 'Capturé', bg_color: 'bg-slate-200', text_color: 'text-slate-700' };
-    case 'en_attente_ia':
-      return { label: 'En attente réseau / IA', bg_color: 'bg-amber-100', text_color: 'text-amber-800' };
-    case 'traite_ia':
-      return { label: 'Traité par IA', bg_color: 'bg-blue-100', text_color: 'text-blue-800' };
-    case 'a_reviser':
-      return { label: 'À réviser', bg_color: 'bg-rose-100', text_color: 'text-rose-800' };
-    case 'valide':
-      return { label: 'Validé', bg_color: 'bg-emerald-100', text_color: 'text-emerald-800' };
-    default:
-      return null;
-  }
+type status_tone = 'neutral' | 'waiting' | 'alert' | 'success';
+
+const status_badges: Record<record_status, { label: string; tone: status_tone }> = {
+  capture: { label: 'Capturé', tone: 'neutral' },
+  en_attente_ia: { label: 'En attente IA', tone: 'waiting' },
+  traite_ia: { label: 'Analysé', tone: 'neutral' },
+  a_reviser: { label: 'À vérifier', tone: 'alert' },
+  valide: { label: 'Validé', tone: 'success' },
+  patiente_liee: { label: 'Patiente liée', tone: 'success' },
+  enregistre: { label: 'Enregistré', tone: 'success' },
+  synchronise: { label: 'Synchronisé', tone: 'success' },
+  echec_traitement: { label: 'Échec IA, réessai prévu', tone: 'alert' },
+  echec_synchronisation: { label: 'Échec synchro', tone: 'alert' },
+  doublon_suspecte: { label: 'Doublon suspecté', tone: 'alert' },
+  revision_manuelle_requise: { label: 'Révision manuelle', tone: 'alert' },
 };
+
+const tone_text_colors: Record<status_tone, string> = {
+  neutral: 'text-whatsapp_gray_text',
+  waiting: 'text-amber-700',
+  alert: 'text-rose-600',
+  success: 'text-emerald-700',
+};
+
+const field_status_labels: Record<field_status, string> = {
+  connu: '',
+  inconnu: 'inconnu',
+  non_fourni: 'vide',
+  illisible: 'illisible',
+  non_applicable: 'n/a',
+  a_reviser: 'à vérifier',
+};
+
+const needs_review_actions = (status?: record_status) => status === 'traite_ia' || status === 'a_reviser';
 
 export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
   message,
@@ -34,161 +57,115 @@ export const ChatMessageBubble: React.FC<chat_message_bubble_props> = ({
   on_retake_record,
 }) => {
   const is_user_message = message.sender_type === 'user';
-  const is_system_alert = message.sender_type === 'system' || message.content_type === 'system_alert';
 
-  // Notification système centrée (style WhatsApp système)
-  if (is_system_alert) {
+  // Note système centrée, comme les messages "chiffrement de bout en bout" de WhatsApp
+  if (message.sender_type === 'system') {
     return (
-      <View className="items-center my-2 px-6">
-        <View className="bg-amber-100/90 border border-amber-200 px-3.5 py-1.5 rounded-lg shadow-sm max-w-[85%] flex-row items-center">
-          <Ionicons name="information-circle-outline" size={16} color="#92400E" style={{ marginRight: 6 }} />
-          <Text className="text-amber-900 text-xs text-center font-medium leading-4">
-            {message.message_text}
-          </Text>
+      <View className="items-center my-1.5 px-8">
+        <View className="bg-[#FFF5C4] px-3 py-1.5 rounded-lg">
+          <Text className="text-[#54656F] text-xs text-center leading-4">{message.message_text}</Text>
         </View>
       </View>
     );
   }
 
-  const status_badge_info = get_status_badge(message.record_status);
+  const status_badge = message.content_type === 'image' && message.record_status
+    ? status_badges[message.record_status]
+    : null;
+  const show_actions = Boolean(message.record_id && message.extracted_data && needs_review_actions(message.record_status));
 
   return (
-    <View
-      className={`my-1 px-3 flex-row ${
-        is_user_message ? 'justify-end' : 'justify-start'
-      }`}
-    >
+    <View className={`my-1 px-3 ${is_user_message ? 'items-end' : 'items-start'}`}>
       <View
-        className={`max-w-[82%] rounded-2xl p-2.5 shadow-sm ${
-          is_user_message
-            ? 'bg-whatsapp_outgoing rounded-tr-none'
-            : 'bg-whatsapp_incoming rounded-tl-none border border-slate-100'
+        className={`max-w-[85%] rounded-xl px-2.5 pt-2 pb-1 ${
+          is_user_message ? 'bg-whatsapp_outgoing rounded-tr-none' : 'bg-whatsapp_incoming rounded-tl-none'
         }`}
       >
-        {/* En-tête statut si associé à un enregistrement */}
-        {status_badge_info && (
-          <View className="flex-row items-center justify-between mb-1.5 pb-1 border-b border-black/5">
-            <View className={`px-2 py-0.5 rounded-full ${status_badge_info.bg_color}`}>
-              <Text className={`text-[10px] font-semibold ${status_badge_info.text_color}`}>
-                {status_badge_info.label}
-              </Text>
-            </View>
-            {message.patient_id && (
-              <Text className="text-[10px] text-slate-500 font-medium ml-2">
-                Dossier : {message.patient_id}
-              </Text>
-            )}
-          </View>
-        )}
-
-        {/* Aperçu de la photo de registre */}
         {message.image_uri && (
-          <View className="rounded-xl overflow-hidden mb-2 bg-slate-100 border border-slate-200">
-            <Image
-              source={{ uri: message.image_uri }}
-              className="w-64 h-48"
-              resizeMode="cover"
-            />
-          </View>
+          <Image
+            source={{ uri: message.image_uri }}
+            className="w-60 h-80 rounded-lg mb-1"
+            resizeMode="cover"
+          />
         )}
 
-        {/* Contenu textuel */}
         {message.message_text && (
-          <Text className="text-whatsapp_dark_text text-[15px] leading-5 pr-2">
-            {message.message_text}
-          </Text>
+          <Text className="text-whatsapp_dark_text text-[15px] leading-5">{message.message_text}</Text>
         )}
 
-        {/* Données extraites par l'IA (pour étape 4 et 5) */}
         {message.extracted_data && (
-          <View className="mt-2 pt-2 border-t border-slate-200 bg-slate-50/80 p-2.5 rounded-lg">
-            <View className="flex-row items-center mb-1.5">
-              <MaterialCommunityIcons name="robot-outline" size={16} color="#075E54" />
-              <Text className="text-xs font-bold text-whatsapp_teal ml-1">
-                Données extraites du registre :
-              </Text>
-            </View>
-
+          <View className="mt-1.5">
             {Object.entries(message.extracted_data).map(([field_name, field_val]) => {
               if (!field_val) return null;
 
-              const is_illisible = field_val.statut === 'illisible';
-              const is_inconnu = field_val.statut === 'inconnu';
+              const is_doubtful = doubtful_field_statuses.includes(field_val.statut);
+              const status_hint = is_doubtful
+                ? `${field_status_labels[field_val.statut]} · ${Math.round(field_val.confiance * 100)}%`
+                : field_status_labels[field_val.statut];
 
               return (
-                <View key={field_name} className="flex-row justify-between py-1 border-b border-slate-200/50">
-                  <Text className="text-xs text-slate-600 font-medium capitalize">
-                    {field_name.replace(/_/g, ' ')} :
+                <View key={field_name} className="flex-row justify-between py-1">
+                  <Text className="text-[13px] text-whatsapp_gray_text capitalize mr-3">
+                    {field_name.replace(/_/g, ' ')}
                   </Text>
-                  <View className="flex-row items-center">
+                  <View className="flex-shrink items-end">
                     <Text
-                      className={`text-xs font-semibold ${
-                        is_illisible
-                          ? 'text-rose-600 italic'
-                          : is_inconnu
-                          ? 'text-amber-600 italic'
-                          : 'text-slate-800'
+                      className={`text-[13px] font-medium ${
+                        is_doubtful ? 'text-rose-600' : field_val.statut === 'connu' ? 'text-whatsapp_dark_text' : 'text-slate-400'
                       }`}
+                      numberOfLines={2}
                     >
-                      {String(field_val.valeur ?? 'Non spécifié')}
+                      {field_val.valeur !== null ? String(field_val.valeur) : '—'}
                     </Text>
-                    {is_illisible && (
-                      <Ionicons name="alert-circle" size={14} color="#E11D48" style={{ marginLeft: 3 }} />
+                    {status_hint !== '' && (
+                      <Text className={`text-[10px] ${is_doubtful ? 'text-rose-600' : 'text-slate-400'}`}>
+                        {status_hint}
+                      </Text>
                     )}
                   </View>
                 </View>
               );
             })}
-
-            {/* Boutons interactifs WhatsApp style pour validation */}
-            {message.record_id && (
-              <View className="flex-row justify-between mt-3 pt-2 border-t border-slate-200">
-                <TouchableOpacity
-                  onPress={() => on_confirm_record?.(message.record_id!)}
-                  className="flex-1 bg-emerald-600 py-1.5 px-2 rounded-md mr-1 items-center flex-row justify-center"
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="checkmark-sharp" size={14} color="#FFFFFF" />
-                  <Text className="text-white text-xs font-bold ml-1">Confirmer</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={() => on_correct_record?.(message.record_id!)}
-                  className="flex-1 bg-amber-500 py-1.5 px-2 rounded-md mx-1 items-center flex-row justify-center"
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="create-outline" size={14} color="#FFFFFF" />
-                  <Text className="text-white text-xs font-bold ml-1">Corriger</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={() => on_retake_record?.(message.record_id!)}
-                  className="flex-1 bg-slate-500 py-1.5 px-2 rounded-md ml-1 items-center flex-row justify-center"
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="camera-reverse-outline" size={14} color="#FFFFFF" />
-                  <Text className="text-white text-xs font-bold ml-1">Reprendre</Text>
-                </TouchableOpacity>
-              </View>
-            )}
           </View>
         )}
 
-        {/* Pied de message (Heure + Double checkmarks WhatsApp) */}
-        <View className="flex-row items-center justify-end mt-1">
-          <Text className="text-[10px] text-whatsapp_gray_text mr-1">
-            {message.created_at}
-          </Text>
+        <View className="flex-row items-center justify-end mt-0.5">
+          {status_badge && (
+            <Text className={`text-[11px] mr-auto pr-3 ${tone_text_colors[status_badge.tone]}`}>
+              {status_badge.label}
+            </Text>
+          )}
+          <Text className="text-[11px] text-whatsapp_gray_text">{message.created_at}</Text>
           {is_user_message && (
             <MaterialCommunityIcons
               name={message.is_read ? 'check-all' : 'check'}
               size={14}
               color={message.is_read ? '#34B7F1' : '#8696A0'}
+              style={{ marginLeft: 3 }}
             />
           )}
         </View>
       </View>
+
+      {/* Boutons de réponse rapide sous la bulle, comme les messages interactifs WhatsApp */}
+      {show_actions && (
+        <View className="max-w-[85%] w-full mt-0.5">
+          {[
+            { label: 'Confirmer', on_press: on_confirm_record },
+            { label: 'Corriger', on_press: on_correct_record },
+            { label: 'Reprendre la photo', on_press: on_retake_record },
+          ].map((action_item) => (
+            <TouchableOpacity
+              key={action_item.label}
+              onPress={() => action_item.on_press?.(message.record_id!)}
+              className="bg-whatsapp_incoming rounded-lg py-2.5 mt-0.5 items-center"
+              activeOpacity={0.7}
+            >
+              <Text className="text-[#027EB5] text-[15px] font-medium">{action_item.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
     </View>
   );
 };
-

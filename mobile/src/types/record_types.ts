@@ -7,6 +7,7 @@ export interface db_record_row {
   status: record_status;
   extracted_data: string | null;
   created_at: string;
+  last_error: string | null;
 }
 
 export interface save_record_params {
@@ -21,4 +22,5 @@ export interface parsed_record_row {
   status: record_status;
   extracted_data: extracted_record_data | null;
   created_at: string;
+  last_error: string | null;
 }

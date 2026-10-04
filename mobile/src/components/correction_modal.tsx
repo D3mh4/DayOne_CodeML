@@ -10,7 +10,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { extracted_record_data, extracted_field_value } from '../types/chat_types';
+import { extracted_record_data, doubtful_field_statuses } from '../types/chat_types';
 
 interface correction_modal_props {
   is_visible: boolean;
@@ -61,11 +61,18 @@ export const CorrectionModal: React.FC<correction_modal_props> = ({
     Object.entries(form_values).forEach(([key, typed_val]) => {
       const existing_field = updated_record_data[key];
       const trimmed_val = typed_val.trim();
+      const original_val =
+        existing_field?.valeur !== null && existing_field?.valeur !== undefined
+          ? String(existing_field.valeur)
+          : '';
+
+      // Champ non modifié : on garde le statut et la confiance de l'IA (sinon on effacerait ses doutes)
+      if (trimmed_val === original_val) return;
 
       updated_record_data[key] = {
         valeur: trimmed_val || null,
         confiance: 1.0, // Correction manuelle par la sage-femme = confiance maximale
-        statut: trimmed_val ? 'connu' : 'inconnu',
+        statut: trimmed_val ? 'connu' : 'non_fourni',
       };
     });
 
@@ -105,7 +112,7 @@ export const CorrectionModal: React.FC<correction_modal_props> = ({
             {Object.entries(initial_data).map(([field_key, field_obj]) => {
               if (!field_obj) return null;
 
-              const is_illisible_initial = field_obj.statut === 'illisible';
+              const is_illisible_initial = doubtful_field_statuses.includes(field_obj.statut);
               const current_field_value = form_values[field_key] ?? '';
 
               return (
@@ -118,7 +125,7 @@ export const CorrectionModal: React.FC<correction_modal_props> = ({
                       <View className="bg-rose-100 px-2 py-0.5 rounded-full flex-row items-center">
                         <Ionicons name="alert-circle" size={12} color="#E11D48" />
                         <Text className="text-[10px] text-rose-700 font-bold ml-1">
-                          Était illisible
+                          À vérifier
                         </Text>
                       </View>
                     )}

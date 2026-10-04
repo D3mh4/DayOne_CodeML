@@ -1,77 +1,52 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import NetInfo, { NetInfoState } from '@react-native-community/netinfo';
 
 export interface network_status_info {
-  is_connected: boolean;
-  is_internet_reachable: boolean;
+  is_online: boolean;
   connection_type: string;
   is_simulated_offline: boolean;
   toggle_network_simulation: () => void;
 }
 
+/**
+ * État réseau effectif = réseau réel ET pas de coupure simulée (bouton de démo).
+ * on_network_restored est appelé à chaque passage hors ligne -> en ligne, réel ou simulé.
+ */
 export const use_network_status = (
   on_network_restored?: () => void
 ): network_status_info => {
-  const [real_connected, set_real_connected] = useState<boolean>(true);
-  const [real_reachable, set_real_reachable] = useState<boolean>(true);
-  const [conn_type, set_conn_type] = useState<string>('wifi');
+  const [real_online, set_real_online] = useState<boolean>(true);
+  const [conn_type, set_conn_type] = useState<string>('unknown');
   const [is_simulated_offline, set_is_simulated_offline] = useState<boolean>(false);
-  const [previous_online_state, set_previous_online_state] = useState<boolean>(true);
+
+  const restored_callback_ref = useRef(on_network_restored);
+  restored_callback_ref.current = on_network_restored;
 
   useEffect(() => {
-    // Vérification initiale
-    NetInfo.fetch().then((initial_state: NetInfoState) => {
-      const initial_online = Boolean(initial_state.isConnected);
-      set_real_connected(initial_online);
-      set_real_reachable(initial_state.isInternetReachable ?? initial_online);
-      set_conn_type(initial_state.type);
-      set_previous_online_state(initial_online);
-    });
-
-    // Écoute en continu avec @react-native-community/netinfo
-    const unsubscribe_netinfo = NetInfo.addEventListener((net_state: NetInfoState) => {
-      const now_connected = Boolean(net_state.isConnected);
-      const now_reachable = net_state.isInternetReachable ?? now_connected;
-
-      set_real_connected(now_connected);
-      set_real_reachable(now_reachable);
+    const apply_state = (net_state: NetInfoState) => {
+      // isInternetReachable vaut null tant qu'il n'est pas déterminé : on se fie alors à isConnected
+      set_real_online(Boolean(net_state.isConnected) && net_state.isInternetReachable !== false);
       set_conn_type(net_state.type);
-
-      // Détection de la transition hors ligne -> en ligne
-      if (!is_simulated_offline) {
-        if (!previous_online_state && now_connected) {
-          on_network_restored?.();
-        }
-        set_previous_online_state(now_connected);
-      }
-    });
-
-    return () => {
-      unsubscribe_netinfo();
     };
-  }, [previous_online_state, is_simulated_offline, on_network_restored]);
 
-  const toggle_network_simulation = () => {
-    set_is_simulated_offline((prev_mode) => {
-      const next_mode = !prev_mode;
-      if (prev_mode && !next_mode) {
-        // Retour en ligne simulé
-        setTimeout(() => {
-          on_network_restored?.();
-        }, 300);
-      }
-      return next_mode;
-    });
-  };
+    NetInfo.fetch().then(apply_state);
+    return NetInfo.addEventListener(apply_state);
+  }, []);
 
-  const effective_is_connected = is_simulated_offline ? false : real_connected;
-  const effective_is_reachable = is_simulated_offline ? false : real_reachable;
+  const is_online = real_online && !is_simulated_offline;
+  const previous_online_ref = useRef(is_online);
+
+  useEffect(() => {
+    if (!previous_online_ref.current && is_online) {
+      restored_callback_ref.current?.();
+    }
+    previous_online_ref.current = is_online;
+  }, [is_online]);
 
   return {
-    is_connected: effective_is_connected,
-    is_internet_reachable: effective_is_reachable,
+    is_online,
     connection_type: is_simulated_offline ? 'none' : conn_type,
     is_simulated_offline,
-    toggle_network_simulation,
+    toggle_network_simulation: () => set_is_simulated_offline((prev_mode) => !prev_mode),
   };
 };
