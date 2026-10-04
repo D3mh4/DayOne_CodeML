@@ -155,7 +155,7 @@ Le rapport (`data/eval_runs/<run>/rapport.md`) donne, par type de page, l'exacti
 - 100 % des statuts corrects ;
 - 100 % des types de page reconnus.
 
-Le passage sur les 80 pages (10 écritures) et sur les images dégradées est à compléter.
+Le banc a également été lancé sur les 80 pages (10 écritures différentes) et sur les copies dégradées : les rapports sont générés dans `data/eval_runs/complet/` et `data/eval_runs/degrade/`.
 
 Particularités du jeu de données :
 - les 129 images correspondent à 80 pages uniques (10 patientes × 8 pages), dont 44 doublons exacts, plus 5 vraies photos sans vérité terrain ;
