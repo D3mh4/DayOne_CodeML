@@ -1,7 +1,15 @@
 from typing import Optional, Literal, Union, Dict, Any
 from pydantic import BaseModel, Field
 
-field_status_type = Literal['connu', 'inconnu', 'illisible']
+# Les 6 statuts exigés par le défi (CONNU, INCONNU, NON_FOURNI, ILLISIBLE, NON_APPLICABLE, À_RÉVISER)
+field_status_type = Literal[
+    'connu',
+    'inconnu',
+    'non_fourni',
+    'illisible',
+    'non_applicable',
+    'a_reviser',
+]
 
 class extracted_field(BaseModel):
     valeur: Optional[Union[str, int, float]] = Field(
@@ -16,7 +24,11 @@ class extracted_field(BaseModel):
     )
     statut: field_status_type = Field(
         default='inconnu',
-        description="Statut du champ : 'connu', 'inconnu', ou 'illisible'"
+        description=(
+            "connu: écrit et lisible | inconnu: la sage-femme a écrit que c'est inconnu | "
+            "non_fourni: case vide | illisible: écrit mais impossible à lire | "
+            "non_applicable: barré, tiret ou sans objet | a_reviser: lu mais douteux"
+        )
     )
 
 class maternity_registry_data(BaseModel):
@@ -24,10 +36,7 @@ class maternity_registry_data(BaseModel):
         default_factory=extracted_field,
         description="Numéro d'ordre ou identifiant dans le registre papier"
     )
-    nom_patiente: extracted_field = Field(
-        default_factory=extracted_field,
-        description="Nom et prénom de la patiente / parturiente"
-    )
+    # Pas de nom, CIN, téléphone, adresse ni nom du mari : interdit par le défi (jamais stocké)
     age: extracted_field = Field(
         default_factory=extracted_field,
         description="Âge de la patiente"
@@ -72,3 +81,5 @@ class extraction_response(BaseModel):
     extracted_data: maternity_registry_data
     raw_summary: Optional[str] = None
     error_message: Optional[str] = None
+    # True quand les données viennent du simulateur et non d'une vraie extraction IA
+    is_simulated: bool = False

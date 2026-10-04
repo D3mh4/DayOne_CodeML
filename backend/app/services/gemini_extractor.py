@@ -1,6 +1,5 @@
-import json
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 from app.config import settings
 from app.schemas.registry_schema import (
     maternity_registry_data,
@@ -11,163 +10,91 @@ logger = logging.getLogger('gemini_extractor')
 logger.setLevel(logging.INFO)
 
 medical_system_prompt = """
-Tu es un assistant expert en extraction et numérisation de registres médicaux manuscrits de maternité, conçu pour aider les sages-femmes dans les centres de santé à faibles ressources.
+Tu es un assistant expert en extraction de registres de maternité papier (écriture manuscrite et imprimée,
+en français, arabe ou anglais), conçu pour aider les sages-femmes dans des centres de santé à faibles ressources.
 
-Analyse avec la plus grande rigueur cette photographie de registre papier de maternité.
-Extrais les données pour la patiente consignée sur la ligne visible.
+Analyse cette photographie de page de registre et remplis le schéma JSON demandé.
 
-DIRECTIVES ESSENTIELLES POUR CHAQUE CHAMP :
-1. Chaque champ de registre doit comporter :
-   - 'valeur' : la transcription exacte du texte manuscrit ou du chiffre (ex: 'Amina Diallo', '3.1 kg', 23).
-   - 'confiance' : score décimal entre 0.0 et 1.0 reflétant la certitude optique.
-   - 'statut' :
-     * 'connu' : l'information est présente et lisible sans ambiguïté.
-     * 'inconnu' : la case est vierge, barrée ou absente du registre.
-     * 'illisible' : une écriture manuscrite est présente mais raturée, tachée, floue ou équivoque.
-2. Si une écriture manuscrite est difficile à déchiffrer avec certitude, classe IMPÉRATIVEMENT le champ en statut 'illisible' avec une confiance inférieure à 0.5, afin que la sage-femme puisse confirmer ou corriger l'information.
-3. Reste strictement fidèle à ce qui figure sur la page. Ne déduis aucune valeur non écrite.
+POUR CHAQUE CHAMP :
+- 'valeur' : la transcription exacte de ce qui est écrit (sans unité inventée, sans déduction).
+- 'confiance' : entre 0.0 et 1.0, ta certitude réelle sur la lecture.
+- 'statut' (choisis exactement un) :
+  * 'connu' : écrit et lisible sans ambiguïté.
+  * 'inconnu' : la sage-femme a explicitement écrit que l'information est inconnue (ex: "?", "inconnu").
+  * 'non_fourni' : la case est vide.
+  * 'illisible' : quelque chose est écrit mais tu ne peux pas le lire (valeur = null).
+  * 'non_applicable' : la case est barrée, contient un tiret, ou ne s'applique pas.
+  * 'a_reviser' : tu as lu une valeur mais tu as un doute (confiance < 0.7) ou elle semble incohérente.
+- Ne masque jamais un doute : en cas d'hésitation, préfère 'a_reviser' ou 'illisible' à 'connu'.
+- Ne déduis jamais une valeur qui n'est pas écrite sur la page.
+
+CONFIDENTIALITÉ (obligatoire) : n'extrais JAMAIS le nom de la femme, le nom du mari, le numéro CIN / national,
+le téléphone ni l'adresse, même s'ils sont visibles sur la page.
 """
 
-def extract_with_simulated_fallback(
-    custom_patient_id: Optional[str] = None
-) -> maternity_registry_data:
+
+class extraction_error(Exception):
+    """L'extraction IA a échoué : l'appelant doit garder le record en file d'attente, pas inventer des données."""
+
+
+def is_gemini_configured() -> bool:
+    api_key_val = settings.gemini_api_key.strip()
+    return bool(api_key_val) and api_key_val.lower() != 'your_gemini_api_key_here'
+
+
+def extract_with_simulated_fallback() -> maternity_registry_data:
     """
-    Simulation d'extraction réaliste lorsque la clé API Gemini n'est pas configurée
-    ou indisponible. Inclut volontairement un champ illisible pour tester le flux de question/correction.
+    Données factices pour développer sans clé API (EXTRACTION_PROVIDER=mock ou clé absente).
+    Inclut volontairement un champ illisible et un champ à réviser pour tester le flux de vérification.
     """
-    random_id = custom_patient_id or f"REG-2026-{100 + hash(custom_patient_id or 'demo') % 900}"
-    
     return maternity_registry_data(
-        numero_registre=extracted_field(
-            valeur=random_id,
-            confiance=0.97,
-            statut='connu'
-        ),
-        nom_patiente=extracted_field(
-            valeur='Aissata Ouedraogo',
-            confiance=0.96,
-            statut='connu'
-        ),
-        age=extracted_field(
-            valeur=26,
-            confiance=0.94,
-            statut='connu'
-        ),
-        gestite_parite=extracted_field(
-            valeur='G2P1',
-            confiance=0.91,
-            statut='connu'
-        ),
-        date_accouchement=extracted_field(
-            valeur='03/10/2026 14:15',
-            confiance=0.95,
-            statut='connu'
-        ),
-        sexe_bebe=extracted_field(
-            valeur='Féminin',
-            confiance=0.98,
-            statut='connu'
-        ),
-        poids_bebe=extracted_field(
-            valeur=None,
-            confiance=0.32,
-            statut='illisible'  # Champ délibérément illisible pour le prompt ciblé de l'étape 5
-        ),
-        apgar=extracted_field(
-            valeur='9/10',
-            confiance=0.93,
-            statut='connu'
-        ),
-        mode_accouchement=extracted_field(
-            valeur='Voie basse eutocique',
-            confiance=0.95,
-            statut='connu'
-        ),
-        etat_mere=extracted_field(
-            valeur='Bon état général, stable',
-            confiance=0.92,
-            statut='connu'
-        ),
-        observations=extracted_field(
-            valeur='Délivrance complète, saignement physiologique',
-            confiance=0.88,
-            statut='connu'
-        )
+        numero_registre=extracted_field(valeur='2026-823-001', confiance=0.97, statut='connu'),
+        age=extracted_field(valeur=26, confiance=0.94, statut='connu'),
+        gestite_parite=extracted_field(valeur='G2P1', confiance=0.62, statut='a_reviser'),
+        date_accouchement=extracted_field(valeur='03/10/2026 14:15', confiance=0.95, statut='connu'),
+        sexe_bebe=extracted_field(valeur='Féminin', confiance=0.98, statut='connu'),
+        poids_bebe=extracted_field(valeur=None, confiance=0.32, statut='illisible'),
+        apgar=extracted_field(valeur=None, confiance=0.9, statut='non_fourni'),
+        mode_accouchement=extracted_field(valeur='Voie basse', confiance=0.95, statut='connu'),
+        etat_mere=extracted_field(valeur='Bon état général', confiance=0.92, statut='connu'),
+        observations=extracted_field(valeur=None, confiance=0.9, statut='non_applicable'),
     )
+
 
 async def extract_registry_from_image(
     image_bytes: bytes,
     image_mime_type: str = 'image/jpeg',
-    patient_id_hint: Optional[str] = None
-) -> Tuple[maternity_registry_data, Optional[str]]:
+) -> maternity_registry_data:
     """
-    Extrait les données structurées d'une photo de registre papier avec Gemini Vision
-    et valide la structure avec Pydantic.
+    Extrait les données structurées d'une photo de registre avec Gemini et les valide avec Pydantic.
+    Lève extraction_error en cas d'échec (jamais de données de secours silencieuses).
     """
-    api_key_val = settings.gemini_api_key.strip()
+    from google import genai
+    from google.genai import types
 
-    if not api_key_val or api_key_val.lower() == 'your_gemini_api_key_here':
-        logger.warning(
-            "GEMINI_API_KEY absente ou par défaut. Utilisation du mode simulation médicale structuré."
-        )
-        simulated_data = extract_with_simulated_fallback(patient_id_hint)
-        return simulated_data, "Mode simulation actif (configurez GEMINI_API_KEY dans backend/.env pour l'API réelle)"
+    client_instance = genai.Client(api_key=settings.gemini_api_key.strip())
 
     try:
-        from google import genai
-        from google.genai import types
-
-        client_instance = genai.Client(
-            api_key=api_key_val,
-            http_options={'timeout': 15}
+        logger.info(f"Analyse de registre avec le modèle {settings.gemini_model_name}...")
+        response_result = await client_instance.aio.models.generate_content(
+            model=settings.gemini_model_name,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type=image_mime_type),
+                medical_system_prompt,
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type='application/json',
+                response_schema=maternity_registry_data,
+                temperature=0.1,
+            ),
         )
+    except Exception as model_call_error:
+        raise extraction_error(f"Appel Gemini échoué : {model_call_error}") from model_call_error
 
-        model_candidate_list = [
-            settings.gemini_model_name,
-            'gemini-2.5-flash',
-            'gemini-2.0-flash',
-            'gemini-1.5-flash',
-        ]
+    if not response_result.text:
+        raise extraction_error("Réponse Gemini vide")
 
-        last_error = None
-        for current_model in model_candidate_list:
-            try:
-                logger.info(f"Tentative d'analyse de registre avec le modèle {current_model}...")
-
-                response_result = client_instance.models.generate_content(
-                    model=current_model,
-                    contents=[
-                        types.Part.from_bytes(
-                            data=image_bytes,
-                            mime_type=image_mime_type,
-                        ),
-                        medical_system_prompt,
-                    ],
-                    config=types.GenerateContentConfig(
-                        response_mime_type='application/json',
-                        response_schema=maternity_registry_data.model_json_schema(),
-                        temperature=0.1,
-                    ),
-                )
-
-                response_text = response_result.text
-                if response_text:
-                    parsed_json_dict = json.loads(response_text)
-                    validated_registry_data = maternity_registry_data.model_validate(parsed_json_dict)
-                    return validated_registry_data, None
-
-            except Exception as model_call_error:
-                last_error = model_call_error
-                logger.warning(f"Échec avec {current_model}: {model_call_error}")
-                continue
-
-        raise last_error or Exception("Aucun modèle n'a pu répondre")
-
-    except Exception as general_extraction_error:
-        logger.error(f"Erreur lors de l'appel Gemini : {general_extraction_error}")
-        # En cas d'erreur API, on bascule intelligemment sur la simulation pour ne pas bloquer l'application
-        simulated_data = extract_with_simulated_fallback(patient_id_hint)
-        return (
-            simulated_data,
-            f"Erreur API Gemini ({str(general_extraction_error)}). Données de secours fournies."
-        )
+    try:
+        return maternity_registry_data.model_validate_json(response_result.text)
+    except Exception as validation_error:
+        raise extraction_error(f"Réponse Gemini hors schéma : {validation_error}") from validation_error

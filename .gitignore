@@ -17,6 +17,11 @@ venv/
 *.sqlite
 *.db
 
+# Données et documents des organisateurs (repo public) : à télécharger depuis le Drive, voir README
+data/
+consignes-fr-en.pdf
+manifest.json
+
 # Environment & Secrets
 .env
 **/.env
