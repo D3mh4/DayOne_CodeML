@@ -1,11 +1,12 @@
 import io
 import sys
+import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 # Assurer la résolution du module app
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import pytest
 from PIL import Image
 from starlette.testclient import TestClient
 from app import main as main_module
@@ -23,53 +24,55 @@ def build_dummy_upload():
     return {'image_file': ('registre_maternite.jpg', buffer.getvalue(), 'image/jpeg')}
 
 
-def test_health_check_endpoint():
-    client = TestClient(app)
-    response = client.get('/health')
-    assert response.status_code == 200
-    data = response.json()
-    assert data['status'] == 'healthy'
-    assert data['service'] == 'dayone_codeml_backend'
+class TestBackendAPI(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app)
 
+    def test_health_check_endpoint(self):
+        response = self.client.get('/health')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data['status'], 'healthy')
+        self.assertEqual(data['service'], 'dayone_codeml_backend')
 
-def test_extract_registry_mock_mode(monkeypatch):
-    monkeypatch.setattr(settings, 'extraction_provider', 'mock')
-    client = TestClient(app)
+    def test_extract_registry_mock_mode(self):
+        with patch.object(settings, 'extraction_provider', 'mock'):
+            response = self.client.post(
+                '/extract_registry',
+                files=build_dummy_upload(),
+                data={'record_id': 'rec_test_456', 'patient_id': 'PAT-TEST-99'},
+            )
+            self.assertEqual(response.status_code, 200)
+            json_data = response.json()
+            self.assertTrue(json_data['success'])
+            self.assertTrue(json_data['is_simulated'])
+            self.assertEqual(json_data['record_id'], 'rec_test_456')
+            self.assertEqual(json_data['patient_id'], 'PAT-TEST-99')
 
-    response = client.post(
-        '/extract_registry',
-        files=build_dummy_upload(),
-        data={'record_id': 'rec_test_456', 'patient_id': 'PAT-TEST-99'},
-    )
-    assert response.status_code == 200
-    json_data = response.json()
-    assert json_data['success'] is True
-    assert json_data['is_simulated'] is True
-    assert json_data['record_id'] == 'rec_test_456'
-    assert json_data['patient_id'] == 'PAT-TEST-99'
+            extracted = json_data['extracted_data']
+            # Aucun identifiant direct ne doit sortir du backend
+            self.assertNotIn('nom_patiente', extracted)
+            for field_val in extracted.values():
+                self.assertIn(field_val['statut'], valid_statuses)
+                self.assertGreaterEqual(field_val['confiance'], 0.0)
+                self.assertLessEqual(field_val['confiance'], 1.0)
 
-    extracted = json_data['extracted_data']
-    # Aucun identifiant direct ne doit sortir du backend
-    assert 'nom_patiente' not in extracted
-    for field_val in extracted.values():
-        assert field_val['statut'] in valid_statuses
-        assert 0.0 <= field_val['confiance'] <= 1.0
+    def test_extract_registry_failure_is_handled(self):
+        """Un échec Gemini explicite renvoie une erreur 502."""
+        with patch.object(settings, 'extraction_provider', 'gemini'), \
+             patch.object(main_module, 'is_gemini_configured', lambda: True):
 
+            async def failing_extractor(**_kwargs):
+                raise extraction_error('quota dépassé')
 
-def test_extract_registry_failure_is_not_hidden(monkeypatch):
-    """Un échec Gemini doit renvoyer une erreur, jamais des données inventées."""
-    monkeypatch.setattr(settings, 'extraction_provider', 'gemini')
-    monkeypatch.setattr(main_module, 'is_gemini_configured', lambda: True)
-
-    async def failing_extractor(**_kwargs):
-        raise extraction_error('quota dépassé')
-
-    monkeypatch.setattr(main_module, 'extract_registry_from_image', failing_extractor)
-    client = TestClient(app)
-
-    response = client.post('/extract_registry', files=build_dummy_upload(), data={'record_id': 'rec_x'})
-    assert response.status_code == 502
-    assert 'quota' in response.json()['detail']
+            with patch.object(main_module, 'extract_registry_from_image', failing_extractor):
+                response = self.client.post(
+                    '/extract_registry',
+                    files=build_dummy_upload(),
+                    data={'record_id': 'rec_x'}
+                )
+                self.assertEqual(response.status_code, 502)
+                self.assertIn('quota', response.json()['detail'])
 
 
 def test_missing_gemini_sdk_returns_clear_502(monkeypatch):
@@ -94,4 +97,4 @@ def test_missing_gemini_sdk_returns_clear_502(monkeypatch):
 
 
 if __name__ == '__main__':
-    sys.exit(pytest.main([__file__, '-v']))
+    unittest.main()

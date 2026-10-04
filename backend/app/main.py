@@ -10,6 +10,7 @@ from app.services.gemini_extractor import (
     extraction_error,
     is_gemini_configured,
     is_gemini_sdk_installed,
+    is_ai_service_configured,
 )
 
 # Configuration du logging
@@ -82,13 +83,13 @@ async def extract_registry_endpoint(
     )
 
     # 3. Mode simulation explicite : signalé dans la réponse, jamais déguisé en vraie extraction
-    if settings.extraction_provider == 'mock' or not is_gemini_configured():
+    if not is_ai_service_configured():
         return extraction_response(
             success=True,
             record_id=record_id,
             patient_id=patient_id,
             extracted_data=extract_with_simulated_fallback(),
-            error_message="Mode simulation actif (EXTRACTION_PROVIDER=mock ou GEMINI_API_KEY absente)",
+            error_message="Mode simulation actif (aucune clé IA configurée ou EXTRACTION_PROVIDER=mock)",
             is_simulated=True,
         )
 
@@ -103,6 +104,16 @@ async def extract_registry_endpoint(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(failed_extraction),
+        )
+    except Exception as unexpected_error:
+        logger.error(f"Erreur inattendue lors de l'extraction pour record_id={record_id}: {unexpected_error}")
+        return extraction_response(
+            success=True,
+            record_id=record_id,
+            patient_id=patient_id,
+            extracted_data=extract_with_simulated_fallback(),
+            error_message=f"Mode secours activé: {unexpected_error}",
+            is_simulated=True,
         )
 
     return extraction_response(
