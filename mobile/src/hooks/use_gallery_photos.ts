@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { requireOptionalNativeModule } from 'expo';
 import * as ImagePicker from 'expo-image-picker';
 
-type media_library_module = typeof import('expo-media-library');
+type media_library_module = any;
 
 export interface gallery_photo {
   id: string;
@@ -75,10 +75,10 @@ export const use_gallery_photos = (is_enabled: boolean) => {
         .exe();
 
       // getInfo() résout l'URI file:// (sur iOS l'id est un identifiant ph:// non lisible directement)
-      const page_infos = await Promise.all(page_assets.map((asset_item) => asset_item.getInfo()));
+      const page_infos = await Promise.all(page_assets.map((asset_item: any) => asset_item.getInfo()));
 
       loaded_count_ref.current += page_assets.length;
-      set_photos((prev) => [...prev, ...page_infos.map((info) => ({ id: info.id, uri: info.uri }))]);
+      set_photos((prev) => [...prev, ...page_infos.map((info: any) => ({ id: info.id, uri: info.uri }))]);
       set_has_more(page_assets.length === page_size);
     } catch (gallery_error) {
       console.warn('Lecture de la galerie impossible :', gallery_error);
@@ -120,7 +120,7 @@ export const use_gallery_photos = (is_enabled: boolean) => {
 
     media_library
       .getPermissionsAsync(false, ['photo'])
-      .then((permission_result) => {
+      .then((permission_result: any) => {
         if (permission_result.granted) set_status('ready');
         else if (permission_result.canAskAgain) set_status('needs_permission');
         else set_status('denied');

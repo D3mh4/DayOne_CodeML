@@ -19,7 +19,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 python -m pytest tests
 ```
 
-`EXTRACTION_PROVIDER=mock` renvoie des données factices **marquées comme simulées** (aucun coût API). En mode `gemini`, une erreur d'extraction renvoie un HTTP 502 : le mobile garde la photo en `echec_traitement` et la renvoie au prochain retour réseau. Aucune donnée inventée.
+Sur macOS/Linux, `./run_server.sh` crée le `.venv` si besoin et lance le serveur avec le bon Python
+(sinon : erreur « cannot import name 'genai' »).
+
+Fournisseurs (`EXTRACTION_PROVIDER` dans `backend/.env`) : `auto` (Gemini, plusieurs modèles si l'un est saturé,
+puis Groq si `GROQ_API_KEY` est mise), `gemini`, `groq`, ou `mock`. `mock` (ou aucune clé) renvoie des données factices
+**marquées comme simulées**. Si l'IA échoue, le serveur renvoie une erreur 502 : le mobile garde la photo en
+`echec_traitement` et la renvoie plus tard. Jamais de données inventées à la place d'une vraie lecture.
 
 ## Lancer le mobile
 
