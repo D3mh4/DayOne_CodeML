@@ -8,6 +8,8 @@ export interface db_record_row {
   extracted_data: string | null;
   created_at: string;
   last_error: string | null;
+  // Dernière modification (null pour les lignes créées avant la migration v4)
+  updated_at?: string | null;
 }
 
 export interface save_record_params {
@@ -32,6 +34,8 @@ export interface create_patient_params {
 
 export interface db_patient_with_count extends db_patient_row {
   records_count: number;
+  // Dernière activité sur le profil ou l'une de ses fiches (tri « modifié récemment »)
+  last_modified_at?: string;
 }
 
 export interface parsed_record_row {

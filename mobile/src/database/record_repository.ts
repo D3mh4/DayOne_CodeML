@@ -15,7 +15,7 @@ import {
 } from '../types/chat_types';
 
 const database_name = 'dayone_codeml.db';
-const schema_version = 3;
+const schema_version = 4;
 let database_promise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 const status_check_list = all_record_statuses.map((status_val) => `'${status_val}'`).join(', ');
@@ -28,7 +28,8 @@ const create_record_table_sql = `
     status TEXT NOT NULL CHECK(status IN (${status_check_list})),
     extracted_data TEXT,
     created_at TEXT NOT NULL,
-    last_error TEXT
+    last_error TEXT,
+    updated_at TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_record_status ON record (status);
   CREATE INDEX IF NOT EXISTS idx_record_created_at ON record (created_at);
@@ -87,6 +88,16 @@ const open_and_migrate_database = async (): Promise<SQLite.SQLiteDatabase> => {
       await tx.execAsync(create_record_table_sql);
       await tx.execAsync(create_patient_table_sql);
 
+      // Migration v3 -> v4 : date de dernière modification (tri « modifié récemment »)
+      const record_columns = await tx.getAllAsync<{ name: string }>('PRAGMA table_info(record);');
+      if (!record_columns.some((column) => column.name === 'updated_at')) {
+        await tx.execAsync('ALTER TABLE record ADD COLUMN updated_at TEXT;');
+      }
+      await tx.execAsync(`
+        UPDATE record SET updated_at = created_at WHERE updated_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_record_updated_at ON record (updated_at);
+      `);
+
       await tx.execAsync(`PRAGMA user_version = ${schema_version};`);
     });
   }
@@ -141,9 +152,9 @@ export const replace_record_image = async (
   const persistent_image_uri = await persist_photo(source_image_uri, `${record_id}_retake_${Date.now()}`);
 
   await db.runAsync(
-    `UPDATE record SET image_uri = ?, status = 'en_attente_ia', extracted_data = NULL, last_error = NULL
-     WHERE id = ?;`,
-    [persistent_image_uri, record_id]
+    `UPDATE record SET image_uri = ?, status = 'en_attente_ia', extracted_data = NULL, last_error = NULL,
+     updated_at = ? WHERE id = ?;`,
+    [persistent_image_uri, new Date().toISOString(), record_id]
   );
 
   const updated_row = await get_record_by_id(record_id);
@@ -170,14 +181,15 @@ export const save_offline_photo_record = async (
   const initial_status: record_status = 'en_attente_ia';
 
   await db.runAsync(
-    `INSERT INTO record (id, patient_id, image_uri, status, extracted_data, created_at)
-     VALUES (?, ?, ?, ?, ?, ?);`,
+    `INSERT INTO record (id, patient_id, image_uri, status, extracted_data, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?);`,
     [
       generated_id,
       params.patient_id ?? null,
       persistent_image_uri,
       initial_status,
       null,
+      current_iso_date,
       current_iso_date,
     ]
   );
@@ -189,6 +201,7 @@ export const save_offline_photo_record = async (
     status: initial_status,
     extracted_data: null,
     created_at: current_iso_date,
+    updated_at: current_iso_date,
     last_error: null,
   };
 };
@@ -237,9 +250,10 @@ export const mark_record_failed = async (
   error_message: string
 ): Promise<void> => {
   const db = await get_database_connection();
-  await db.runAsync('UPDATE record SET status = ?, last_error = ? WHERE id = ?;', [
+  await db.runAsync('UPDATE record SET status = ?, last_error = ?, updated_at = ? WHERE id = ?;', [
     failure_status,
     error_message,
+    new Date().toISOString(),
     record_id,
   ]);
 };
@@ -264,9 +278,13 @@ export const get_record_by_id = async (
 export const update_record_status_and_data = async (
   record_id: string,
   new_status: record_status,
-  extracted_data?: extracted_record_data | string | null
+  extracted_data?: extracted_record_data | string | null,
+  // false pour une écriture technique (ex. titre déduit à l'affichage) qui ne doit pas compter comme une modification
+  touch_updated_at = true
 ): Promise<void> => {
   const db = await get_database_connection();
+  const updated_at_sql = touch_updated_at ? ', updated_at = ?' : '';
+  const updated_at_params = touch_updated_at ? [new Date().toISOString()] : [];
   const serialized_data =
     extracted_data === undefined
       ? undefined
@@ -278,12 +296,13 @@ export const update_record_status_and_data = async (
 
   if (serialized_data !== undefined) {
     await db.runAsync(
-      'UPDATE record SET status = ?, extracted_data = ?, last_error = NULL WHERE id = ?;',
-      [new_status, serialized_data, record_id]
+      `UPDATE record SET status = ?, extracted_data = ?, last_error = NULL${updated_at_sql} WHERE id = ?;`,
+      [new_status, serialized_data, ...updated_at_params, record_id]
     );
   } else {
-    await db.runAsync('UPDATE record SET status = ?, last_error = NULL WHERE id = ?;', [
+    await db.runAsync(`UPDATE record SET status = ?, last_error = NULL${updated_at_sql} WHERE id = ?;`, [
       new_status,
+      ...updated_at_params,
       record_id,
     ]);
   }
@@ -379,7 +398,8 @@ export const compute_epidemiological_stats = async (): Promise<epidemiological_s
             syphilis_positive++;
           }
         }
-        if (norm_key.includes('hepatite') || norm_key.includes('vhc') || norm_key.includes('hcv')) {
+        // Hépatite C uniquement : « vaccinee_hepatite_b » / « ag_hbs » concernent l'hépatite B
+        if ((norm_key.includes('hepatite_c') || norm_key.includes('vhc') || norm_key.includes('hcv')) && !norm_key.includes('vaccin')) {
           hep_c_tested++;
           if (raw_str.includes('pos') || raw_str === '+' || raw_str === 'oui' || raw_str.includes('reactif')) {
             hep_c_positive++;
@@ -491,12 +511,14 @@ export const get_all_patients = async (): Promise<db_patient_row[]> => {
  */
 export const get_patients_with_record_counts = async (): Promise<db_patient_with_count[]> => {
   const db = await get_database_connection();
+  // « Modifié récemment » : la dernière activité sur le profil OU sur l'une de ses fiches
   return db.getAllAsync<db_patient_with_count>(`
-    SELECT p.*, COUNT(r.id) as records_count
+    SELECT p.*, COUNT(r.id) as records_count,
+      MAX(p.last_visit_at, COALESCE(MAX(COALESCE(r.updated_at, r.created_at)), p.last_visit_at)) as last_modified_at
     FROM patient p
     LEFT JOIN record r ON r.patient_id = p.id
     GROUP BY p.id
-    ORDER BY p.last_visit_at DESC;
+    ORDER BY last_modified_at DESC;
   `);
 };
 
@@ -506,7 +528,7 @@ export const get_patients_with_record_counts = async (): Promise<db_patient_with
 export const get_records_by_patient_id = async (patient_id: string): Promise<db_record_row[]> => {
   const db = await get_database_connection();
   return db.getAllAsync<db_record_row>(
-    'SELECT * FROM record WHERE patient_id = ? ORDER BY created_at DESC;',
+    'SELECT * FROM record WHERE patient_id = ? ORDER BY COALESCE(updated_at, created_at) DESC;',
     [patient_id]
   );
 };
@@ -517,7 +539,7 @@ export const get_records_by_patient_id = async (patient_id: string): Promise<db_
 export const get_unlinked_records = async (): Promise<db_record_row[]> => {
   const db = await get_database_connection();
   return db.getAllAsync<db_record_row>(
-    'SELECT * FROM record WHERE patient_id IS NULL ORDER BY created_at DESC;'
+    'SELECT * FROM record WHERE patient_id IS NULL ORDER BY COALESCE(updated_at, created_at) DESC;'
   );
 };
 
@@ -541,8 +563,14 @@ export const create_patient = async (
   params: create_patient_params = {}
 ): Promise<db_patient_row> => {
   const db = await get_database_connection();
-  const random_suffix = Math.floor(100 + Math.random() * 900);
-  const generated_code = params.code ?? `PAT-${random_suffix}`;
+  // Code saisi par la sage-femme, sinon code aléatoire libre (4 chiffres, sans collision avec un code existant)
+  let generated_code = params.code?.trim().toUpperCase() ?? '';
+  for (let attempt = 0; !generated_code && attempt < 20; attempt++) {
+    const candidate = `PAT-${Math.floor(1000 + Math.random() * 9000)}`;
+    const taken = await db.getFirstAsync<{ id: string }>('SELECT id FROM patient WHERE code = ?;', [candidate]);
+    if (!taken) generated_code = candidate;
+  }
+  if (!generated_code) throw new Error('Impossible de générer un code patiente libre');
   const generated_id = `pat_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const now_iso = new Date().toISOString();
 
@@ -600,8 +628,8 @@ export const link_record_to_patient = async (
   const now_iso = new Date().toISOString();
 
   await db.runAsync(
-    "UPDATE record SET patient_id = ?, status = 'enregistre' WHERE id = ?;",
-    [patient_id, record_id]
+    "UPDATE record SET patient_id = ?, status = 'enregistre', updated_at = ? WHERE id = ?;",
+    [patient_id, now_iso, record_id]
   );
 
   if (patient_id) {
@@ -622,9 +650,9 @@ export const create_manual_record = async (
   const serialized = JSON.stringify(extracted_data);
 
   await db.runAsync(
-    `INSERT INTO record (id, patient_id, image_uri, status, extracted_data, created_at)
-     VALUES (?, ?, 'manual://entry', 'valide', ?, ?);`,
-    [generated_id, patient_id ?? null, serialized, now_iso]
+    `INSERT INTO record (id, patient_id, image_uri, status, extracted_data, created_at, updated_at)
+     VALUES (?, ?, 'manual://entry', 'valide', ?, ?, ?);`,
+    [generated_id, patient_id ?? null, serialized, now_iso, now_iso]
   );
 
   return {
@@ -634,6 +662,7 @@ export const create_manual_record = async (
     status: 'valide',
     extracted_data: serialized,
     created_at: now_iso,
+    updated_at: now_iso,
     last_error: null,
   };
 };

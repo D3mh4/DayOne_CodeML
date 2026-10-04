@@ -125,6 +125,17 @@ def _match_option(answer: str, options: tuple[str, ...]) -> Optional[str]:
     return min(candidates, key=lambda option: abs(len(_norm(option)) - len(answer_norm))) if candidates else None
 
 
+_dash_values = {'-', '–', '—', '−', '--'}
+
+
+def normalize_dash_fields(flat_fields: dict[str, dict]) -> dict[str, dict]:
+    """Un tiret écrit dans une case veut dire « sans objet » : statut non_applicable, pas une valeur."""
+    for field_val in flat_fields.values():
+        if str(field_val.get('valeur') or '').strip() in _dash_values:
+            field_val.update(valeur=None, statut='non_applicable')
+    return flat_fields
+
+
 def normalize_checkbox_fields(page_type: str, flat_fields: dict[str, dict]) -> dict[str, dict]:
     """
     Remet les cases à cocher au format attendu. Gemini renvoie parfois le libellé de la case (« Présence du globe
@@ -220,4 +231,5 @@ def describe_page(page_type: str) -> tuple[str, str]:
 __all__ = [
     'extracted_value', 'page_classification', 'response_model_for', 'flatten_extraction',
     'classification_prompt', 'extraction_prompt', 'empty_flat_fields', 'describe_page', 'normalize_checkbox_fields',
+    'normalize_dash_fields',
 ]

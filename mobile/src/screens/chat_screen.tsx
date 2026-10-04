@@ -97,6 +97,9 @@ interface patient_browser_context {
   cached_records?: db_record_row[];
   selected_record?: db_record_row;
   is_unlinked_mode?: boolean;
+  // Pagination : page affichée de la liste des patientes et de la liste des documents (0 = première)
+  patient_page?: number;
+  document_page?: number;
 }
 
 interface patient_linking_context {
@@ -136,6 +139,33 @@ const describe_sync_error = (error_message?: string) => {
 };
 
 let message_counter = 0;
+
+// Listes de patientes et de documents : 8 éléments par page (lisible, et autant de boutons de réponse rapide)
+const browser_page_size = 8;
+
+const paginate = <T,>(items: T[], requested_page: number) => {
+  const page_count = Math.max(1, Math.ceil(items.length / browser_page_size));
+  const page = Math.min(Math.max(requested_page, 0), page_count - 1);
+  const start_index = page * browser_page_size;
+  return { page, page_count, start_index, page_items: items.slice(start_index, start_index + browser_page_size) };
+};
+
+const page_label = (page: number, page_count: number) => (page_count > 1 ? ` (page ${page + 1}/${page_count})` : '');
+
+const pagination_quick_replies = (page: number, page_count: number): quick_reply[] => [
+  ...(page > 0 ? [{ label: '◀️ Page précédente', value: 'page_precedente' }] : []),
+  ...(page < page_count - 1 ? [{ label: '▶️ Page suivante', value: 'page_suivante' }] : []),
+];
+
+const is_next_page_command = (lower: string) =>
+  ['page_suivante', 'suivant', 'suivante', 'next', '>', 'page suivante'].includes(lower);
+const is_previous_page_command = (lower: string) =>
+  ['page_precedente', 'precedent', 'précédent', 'precedente', 'précédente', 'prev', 'previous', '<', 'page précédente'].includes(lower);
+
+const format_short_date = (iso_date?: string | null) =>
+  iso_date
+    ? new Date(iso_date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+    : '—';
 
 const build_message = (
   sender_type: chat_message['sender_type'],
@@ -183,6 +213,10 @@ export const ChatScreen: React.FC = () => {
 
   // ÉTATS DE LA MACHINE CONVERSATIONNELLE (100% via messages, zéro popup)
   const [active_question, set_active_question] = useState<pending_field_question | null>(null);
+  // Une seule fiche vérifiée à la fois : quand plusieurs pages se synchronisent d'un coup, les autres attendent
+  // leur tour (sinon une réponse pouvait s'appliquer au champ d'une autre fiche).
+  const review_queue_ref = useRef<{ record_id: string; page_title?: string }[]>([]);
+  const is_review_open_ref = useRef<boolean>(false);
   const [editing_context, set_editing_context] = useState<editing_field_context | null>(null);
   const [patient_linking_context, set_patient_linking_context] = useState<patient_linking_context | null>(null);
   const [multipage_context, set_multipage_context] = useState<multipage_context | null>(null);
@@ -232,6 +266,33 @@ export const ChatScreen: React.FC = () => {
     scroll_to_end();
   };
 
+  /**
+   * Retour à l'état initial : tous les parcours en cours sont fermés, le fil de conversation est vidé
+   * et seul le menu d'accueil reste affiché (précédé d'une courte note si besoin). Les données, elles,
+   * restent en base et se retrouvent dans « patients ».
+   */
+  const return_to_main_menu = (notice?: string) => {
+    set_active_question(null);
+    set_editing_context(null);
+    set_patient_linking_context(null);
+    set_multipage_context(null);
+    set_manual_entry_context(null);
+    set_patient_browser_context(null);
+    set_settings_flow_context(null);
+    set_retake_record_id(null);
+    set_is_attachment_open(false);
+    is_review_open_ref.current = false;
+    set_messages_list([
+      ...(notice ? [build_message('system', { message_text: notice })] : []),
+      build_message('assistant', {
+        message_id: `msg_welcome_${Date.now()}`,
+        message_text: get_welcome_text(current_language),
+        // Des fiches attendent encore une vérification : on le propose en premier
+        quick_replies: [...next_review_reply(), ...get_main_quick_replies(current_language)],
+      }),
+    ]);
+  };
+
   const update_record_messages = (record_id: string, changes: Partial<chat_message>) => {
     set_messages_list((prev) =>
       prev.map((msg) => (msg.record_id === record_id ? { ...msg, ...changes } : msg))
@@ -258,6 +319,7 @@ export const ChatScreen: React.FC = () => {
 
     if (remaining_fields.length === 0) {
       set_active_question(null);
+      is_review_open_ref.current = false;
       // Tous les champs douteux ont été vérifiés : on affiche maintenant le grand message récapitulatif avec les 4 boutons
       let display_title = page_title;
       if (!display_title && extracted_data.titre_document?.valeur) {
@@ -282,6 +344,7 @@ export const ChatScreen: React.FC = () => {
           display_title
         )
       );
+      offer_next_queued_review();
       return;
     }
 
@@ -331,8 +394,36 @@ export const ChatScreen: React.FC = () => {
     const remaining_suffix =
       remaining_fields.length > 1 ? `\n(${remaining_fields.length - 1} autre(s) champ(s) à vérifier ensuite)` : '';
 
+    is_review_open_ref.current = true;
     set_active_question({ record_id, field_key, field_label, read_value });
     append_messages(build_message('assistant', { message_text: question_text + remaining_suffix, quick_replies }));
+  };
+
+  const next_review_reply = (): quick_reply[] =>
+    review_queue_ref.current.length > 0
+      ? [{ label: `▶️ Vérifier la fiche suivante (${review_queue_ref.current.length})`, value: '__next_review__' }]
+      : [];
+
+  const offer_next_queued_review = () => {
+    if (review_queue_ref.current.length === 0) return;
+    append_messages(
+      build_message('system', {
+        message_text: `${review_queue_ref.current.length} autre(s) fiche(s) attendent une vérification.`,
+        quick_replies: next_review_reply(),
+      })
+    );
+  };
+
+  const start_next_queued_review = async () => {
+    const next_item = review_queue_ref.current.shift();
+    if (!next_item) return;
+    const target_record = await get_record_by_id(next_item.record_id);
+    const parsed_row = target_record ? parse_record_row(target_record) : null;
+    if (!parsed_row?.extracted_data) {
+      await start_next_queued_review();
+      return;
+    }
+    await ask_next_doubtful_field(next_item.record_id, parsed_row.extracted_data, next_item.page_title);
   };
 
   const show_sync_success = async (sync_res: sync_result_item) => {
@@ -377,6 +468,12 @@ export const ChatScreen: React.FC = () => {
       // On n'affiche PAS la carte récapitulative tout de suite pour ne pas surcharger la sage-femme.
       // On commence directement par la question sur le premier champ douteux.
       // Le gros récapitulatif sera affiché à la fin quand tous les doutes seront levés.
+      if (is_review_open_ref.current) {
+        // Une autre fiche est déjà en cours de vérification : celle-ci attend son tour
+        review_queue_ref.current.push({ record_id: sync_res.record_id, page_title: sync_res.page_title });
+        return;
+      }
+      is_review_open_ref.current = true;
       await ask_next_doubtful_field(sync_res.record_id, sync_res.extracted_data, sync_res.page_title);
     }
   };
@@ -426,8 +523,12 @@ export const ChatScreen: React.FC = () => {
         await get_database_connection();
         const stored_records = await get_all_records();
         const loaded_messages: chat_message[] = [];
+        // Interface propre au démarrage : seulement les fiches qui attendent encore une action
+        // (en attente IA, en échec, à vérifier). Les fiches terminées se retrouvent dans « patients ».
+        const awaiting_action_statuses: record_status[] = ['capture', 'en_attente_ia', 'echec_traitement', 'traite_ia', 'a_reviser'];
+        const records_to_resume = stored_records.filter((row) => awaiting_action_statuses.includes(row.status));
 
-        for (const row of [...stored_records].reverse()) {
+        for (const row of [...records_to_resume].reverse()) {
           const parsed_row = parse_record_row(row);
           const time_str = format_time(new Date(row.created_at));
 
@@ -464,7 +565,8 @@ export const ChatScreen: React.FC = () => {
       .then(() => NetInfo.fetch())
       .then((net_state) => {
         if (net_state.isConnected && net_state.isInternetReachable !== false) run_sync();
-      });
+      })
+      .catch((startup_error) => console.warn('Démarrage : synchronisation initiale impossible :', startup_error));
   }, []);
 
   // 2. FLUX DE MODIFICATION DE CHAMP (100% conversationnel, zéro popup)
@@ -560,7 +662,7 @@ export const ChatScreen: React.FC = () => {
           message_text:
             `🔗 À quelle patiente souhaitez-vous rattacher cette visite ?\n\n` +
             `${options_text}\n\n` +
-            `Répondez avec le numéro correspondant (1, 2...) ou tapez « annuler » :`,
+            `Répondez avec le numéro correspondant, tapez le code patiente écrit sur le registre (ex : PAT-482), ou « annuler » :`,
           quick_replies,
         })
       );
@@ -708,7 +810,8 @@ export const ChatScreen: React.FC = () => {
               label: 'Nom du document',
               raison: null,
             };
-            await update_record_status_and_data(rec.id, rec.status, parsed);
+            // Écriture technique : ne doit pas faire remonter la fiche en « modifiée récemment »
+            await update_record_status_and_data(rec.id, rec.status, parsed, false);
             return { title, record: { ...rec, extracted_data: JSON.stringify(parsed) } };
           }
         }
@@ -744,8 +847,9 @@ export const ChatScreen: React.FC = () => {
       .join('\n');
   };
 
-  const start_patient_browser_flow = async () => {
+  const start_patient_browser_flow = async (requested_page = 0) => {
     try {
+      // Triées par modification la plus récente (requête SQL)
       const patients = await get_patients_with_record_counts();
       const unlinked = await get_unlinked_records();
 
@@ -765,19 +869,23 @@ export const ChatScreen: React.FC = () => {
         return;
       }
 
+      const { page, page_count, start_index, page_items } = paginate(patients, requested_page);
       set_patient_browser_context({
         stage: 'select_patient',
         cached_patients: patients,
+        patient_page: page,
       });
 
       let options_text = '';
       const quick_replies: quick_reply[] = [];
 
-      patients.forEach((pat, idx) => {
-        const num = idx + 1;
+      // Numérotation globale : taper le numéro d'une patiente d'une autre page fonctionne aussi
+      page_items.forEach((pat, idx) => {
+        const num = start_index + idx + 1;
         const village_str = pat.village ? ` - ${pat.village}` : '';
         const count_str = `${pat.records_count} doc${pat.records_count > 1 ? 's' : ''}`;
-        options_text += `${num}. Patiente **${pat.code}** (${count_str}${village_str})\n`;
+        const modified_str = ` · modifié le ${format_short_date(pat.last_modified_at ?? pat.last_visit_at)}`;
+        options_text += `${num}. Patiente **${pat.code}** (${count_str}${village_str})${modified_str}\n`;
         quick_replies.push({
           label: `${num}. ${pat.code} (${pat.records_count})`,
           value: String(num),
@@ -793,12 +901,14 @@ export const ChatScreen: React.FC = () => {
         });
       }
 
+      quick_replies.push(...pagination_quick_replies(page, page_count));
       quick_replies.push({ label: '❌ Quitter', value: 'annuler' });
 
       append_messages(
         build_message('assistant', {
           message_text:
-            `👥 **Consultation des dossiers patientes :**\n\n` +
+            `👥 **Consultation des dossiers patientes${page_label(page, page_count)} :**\n` +
+            `${patients.length} patiente(s), de la plus récemment modifiée à la plus ancienne.\n\n` +
             `Sélectionnez une patiente par son numéro ou tapez son code (ex: ${patients[0]?.code ?? 'PAT-823'}) :\n\n` +
             `${options_text}\n` +
             `Tapez « annuler » à tout moment pour revenir au chat.`,
@@ -813,9 +923,12 @@ export const ChatScreen: React.FC = () => {
 
   const show_patient_documents = async (
     patient: db_patient_with_count,
-    cached_patients: db_patient_with_count[]
+    cached_patients: db_patient_with_count[],
+    requested_page = 0
   ) => {
+    const patient_page = patient_browser_context?.patient_page ?? 0;
     try {
+      // Triés par modification la plus récente (requête SQL)
       const records = await get_records_by_patient_id(patient.id);
 
       if (records.length === 0) {
@@ -824,6 +937,7 @@ export const ChatScreen: React.FC = () => {
           cached_patients,
           selected_patient: patient,
           cached_records: [],
+          patient_page,
         });
 
         append_messages(
@@ -842,21 +956,18 @@ export const ChatScreen: React.FC = () => {
         return;
       }
 
+      const { page, page_count, start_index, page_items } = paginate(records, requested_page);
       let docs_text = '';
       const quick_replies: quick_reply[] = [];
-      const updated_records: db_record_row[] = [];
+      // Liste complète gardée en mémoire (numéros globaux) ; titres calculés seulement pour la page affichée
+      const updated_records: db_record_row[] = [...records];
 
-      for (let idx = 0; idx < records.length; idx++) {
-        const rec = records[idx];
-        const num = idx + 1;
+      for (let idx = 0; idx < page_items.length; idx++) {
+        const rec = page_items[idx];
+        const num = start_index + idx + 1;
         const { title, record: updated_rec } = await ensure_record_document_title(rec);
-        updated_records.push(updated_rec);
-        const date_str = new Date(rec.created_at).toLocaleDateString('fr-FR', {
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-        });
-        docs_text += `${num}. *${title}* (${date_str}) [${rec.status}]\n`;
+        updated_records[start_index + idx] = updated_rec;
+        docs_text += `${num}. *${title}* (modifié le ${format_short_date(rec.updated_at ?? rec.created_at)}) [${rec.status}]\n`;
         quick_replies.push({
           label: `${num}. ${title}`,
           value: String(num),
@@ -868,17 +979,20 @@ export const ChatScreen: React.FC = () => {
         cached_patients,
         selected_patient: patient,
         cached_records: updated_records,
+        patient_page,
+        document_page: page,
       });
 
+      quick_replies.push(...pagination_quick_replies(page, page_count));
       quick_replies.push({ label: '🔙 Retour aux patientes', value: 'retour_patients' });
       quick_replies.push({ label: '❌ Quitter', value: 'annuler' });
 
       append_messages(
         build_message('assistant', {
           message_text:
-            `📁 *Dossier Patiente : ${patient.code}*\n` +
+            `📁 *Dossier Patiente : ${patient.code}*${page_label(page, page_count)}\n` +
             `• Localité : ${patient.village ?? 'Centre'}\n` +
-            `• ${records.length} document(s) enregistré(s) :\n\n` +
+            `• ${records.length} document(s), du plus récemment modifié au plus ancien :\n\n` +
             `${docs_text}\n` +
             `Tapez le numéro (1, 2...) pour consulter les données de la fiche :`,
           quick_replies,
@@ -889,7 +1003,8 @@ export const ChatScreen: React.FC = () => {
     }
   };
 
-  const show_unlinked_documents = async (cached_patients: db_patient_with_count[]) => {
+  const show_unlinked_documents = async (cached_patients: db_patient_with_count[], requested_page = 0) => {
+    const patient_page = patient_browser_context?.patient_page ?? 0;
     try {
       const records = await get_unlinked_records();
 
@@ -899,6 +1014,7 @@ export const ChatScreen: React.FC = () => {
           cached_patients,
           is_unlinked_mode: true,
           cached_records: [],
+          patient_page,
         });
 
         append_messages(
@@ -910,21 +1026,17 @@ export const ChatScreen: React.FC = () => {
         return;
       }
 
+      const { page, page_count, start_index, page_items } = paginate(records, requested_page);
       let docs_text = '';
       const quick_replies: quick_reply[] = [];
-      const updated_records: db_record_row[] = [];
+      const updated_records: db_record_row[] = [...records];
 
-      for (let idx = 0; idx < records.length; idx++) {
-        const rec = records[idx];
-        const num = idx + 1;
+      for (let idx = 0; idx < page_items.length; idx++) {
+        const rec = page_items[idx];
+        const num = start_index + idx + 1;
         const { title, record: updated_rec } = await ensure_record_document_title(rec);
-        updated_records.push(updated_rec);
-        const date_str = new Date(rec.created_at).toLocaleDateString('fr-FR', {
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-        });
-        docs_text += `${num}. *${title}* (${date_str}) [${rec.status}]\n`;
+        updated_records[start_index + idx] = updated_rec;
+        docs_text += `${num}. *${title}* (modifié le ${format_short_date(rec.updated_at ?? rec.created_at)}) [${rec.status}]\n`;
         quick_replies.push({
           label: `${num}. ${title}`,
           value: String(num),
@@ -936,14 +1048,18 @@ export const ChatScreen: React.FC = () => {
         cached_patients,
         is_unlinked_mode: true,
         cached_records: updated_records,
+        patient_page,
+        document_page: page,
       });
 
+      quick_replies.push(...pagination_quick_replies(page, page_count));
       quick_replies.push({ label: '🔙 Retour aux patientes', value: 'retour_patients' });
 
       append_messages(
         build_message('assistant', {
           message_text:
-            `📄 *Fiches non encore liées à une patiente :*\n\n` +
+            `📄 *Fiches non encore liées à une patiente${page_label(page, page_count)} :*\n` +
+            `Du plus récemment modifié au plus ancien.\n\n` +
             `${docs_text}\n` +
             `Tapez le numéro du document pour consulter ses données :`,
           quick_replies,
@@ -1109,16 +1225,10 @@ export const ChatScreen: React.FC = () => {
 
   // GESTION DU BOUTON [ANNULER]
   const handle_cancel_record = (_record_id: string) => {
-    set_active_question(null);
-    set_editing_context(null);
-    append_messages(
-      build_message('assistant', {
-        message_text:
-          current_language === 'en'
-            ? '↩️ Record validation cancelled. You can review it anytime from « patients » or capture a new page.'
-            : '↩️ Validation de la fiche annulée. Vous pouvez la retrouver à tout moment dans « patients » ou photographier une nouvelle page.',
-        quick_replies: get_main_quick_replies(current_language),
-      })
+    return_to_main_menu(
+      current_language === 'en'
+        ? '↩️ Record validation cancelled. You can review it anytime from « patients ».'
+        : '↩️ Validation de la fiche annulée. Vous pouvez la retrouver à tout moment dans « patients ».'
     );
   };
 
@@ -1126,7 +1236,25 @@ export const ChatScreen: React.FC = () => {
   const handle_send_message = async (text_content: string, display_text?: string) => {
     // Retire les réponses rapides dès qu'un message est envoyé
     set_messages_list((prev) => prev.map((msg) => (msg.quick_replies ? { ...msg, quick_replies: undefined } : msg)));
-    append_messages(build_message('user', { message_text: display_text ?? text_content }));
+    // Une clé API tapée dans les réglages n'apparaît jamais en clair dans le fil de conversation
+    const is_secret_input = settings_flow_context?.stage === 'awaiting_api_key';
+    append_messages(
+      build_message('user', { message_text: is_secret_input ? mask_api_key(text_content.trim()) : display_text ?? text_content })
+    );
+
+    // Boutons liés à une fiche précise (et non « la dernière fiche ») : vérification suivante, confirmer, corriger
+    if (text_content === '__next_review__') {
+      await start_next_queued_review();
+      return;
+    }
+    if (text_content.startsWith('__confirm_record__:')) {
+      await handle_confirm_record(text_content.slice('__confirm_record__:'.length));
+      return;
+    }
+    if (text_content.startsWith('__edit_record__:')) {
+      await start_editing_field_flow(text_content.slice('__edit_record__:'.length));
+      return;
+    }
 
     const raw_trimmed = text_content.trim();
     const lower_cmd = raw_trimmed.toLowerCase();
@@ -1162,41 +1290,37 @@ export const ChatScreen: React.FC = () => {
           start_patient_browser_flow();
           return;
         }
-        set_patient_browser_context(null);
-        append_messages(build_message('assistant', { message_text: '↩️ Consultation des dossiers fermée.' }));
+        return_to_main_menu('↩️ Consultation des dossiers fermée.');
         return;
       }
       if (patient_linking_context) {
-        set_patient_linking_context(null);
-        append_messages(build_message('assistant', { message_text: '↩️ Liaison patiente reportée. La fiche reste enregistrée.' }));
+        return_to_main_menu('↩️ Liaison patiente reportée. La fiche reste enregistrée (retrouvable dans « patients »).');
         return;
       }
       if (multipage_context) {
-        set_multipage_context(null);
-        append_messages(build_message('assistant', { message_text: '🏁 Consultation clôturée avec succès.' }));
+        return_to_main_menu('🏁 Livret clôturé et archivé localement.');
         return;
       }
       if (settings_flow_context) {
-        set_settings_flow_context(null);
-        append_messages(
-          build_message('assistant', {
-            message_text: current_language === 'en' ? '↩️ Exited settings.' : '↩️ Sortie des paramètres.',
-            quick_replies: get_main_quick_replies(current_language),
-          })
-        );
+        return_to_main_menu(current_language === 'en' ? '↩️ Exited settings.' : '↩️ Sortie des paramètres.');
         return;
       }
       if (manual_entry_context) {
-        set_manual_entry_context(null);
-        append_messages(build_message('assistant', { message_text: '↩️ Saisie manuelle annulée.' }));
+        return_to_main_menu('↩️ Saisie manuelle annulée.');
         return;
       }
       if (active_question) {
         set_active_question(null);
-        append_messages(build_message('assistant', { message_text: '↩️ Question de vérification ignorée pour l’instant.' }));
+        is_review_open_ref.current = false;
+        append_messages(
+          build_message('assistant', {
+            message_text: '↩️ Question de vérification ignorée pour l’instant.',
+            quick_replies: next_review_reply(),
+          })
+        );
         return;
       }
-      append_messages(build_message('assistant', { message_text: 'Prêt. Photographiez une page de registre ou tapez « info ».' }));
+      return_to_main_menu();
       return;
     }
 
@@ -1210,13 +1334,7 @@ export const ChatScreen: React.FC = () => {
           lower_cmd === 'quitter' ||
           lower_cmd === 'exit'
         ) {
-          set_settings_flow_context(null);
-          append_messages(
-            build_message('assistant', {
-              message_text: current_language === 'en' ? '↩️ Exited settings.' : '↩️ Sortie des paramètres.',
-              quick_replies: get_main_quick_replies(current_language),
-            })
-          );
+          return_to_main_menu(current_language === 'en' ? '↩️ Exited settings.' : '↩️ Sortie des paramètres.');
           return;
         }
 
@@ -1663,7 +1781,11 @@ export const ChatScreen: React.FC = () => {
             raison: null,
           };
 
-          const next_status = status_after_extraction(current_data);
+          // Une fiche déjà validée ou enregistrée garde son statut si la correction ne laisse aucun doute
+          const finished_statuses: record_status[] = ['valide', 'patiente_liee', 'enregistre', 'synchronise'];
+          const fresh_status = status_after_extraction(current_data);
+          const next_status =
+            fresh_status === 'traite_ia' && finished_statuses.includes(target_record.status) ? target_record.status : fresh_status;
           await update_record_status_and_data(editing_context.record_id, next_status, current_data);
           update_record_messages(editing_context.record_id, {
             extracted_data: current_data,
@@ -1705,8 +1827,8 @@ export const ChatScreen: React.FC = () => {
                 `✅ « ${selected.label} » mis à jour : « ${validation.formatted_display} ».\n\n` +
                 `Que souhaitez-vous faire ?`,
               quick_replies: [
-                { label: '✓ Confirmer le dossier', value: 'confirmer' },
-                { label: '✏️ Modifier un autre champ', value: 'corriger' },
+                { label: '✓ Confirmer le dossier', value: `__confirm_record__:${editing_context.record_id}` },
+                { label: '✏️ Modifier un autre champ', value: `__edit_record__:${editing_context.record_id}` },
               ],
             })
           );
@@ -1735,10 +1857,22 @@ export const ChatScreen: React.FC = () => {
       } else if (num_choice === candidates.length + 2 || raw_trimmed.toLowerCase().includes('pas') || raw_trimmed.toLowerCase().includes('ignorer')) {
         chosen_patient_id = null;
         confirmation_text = '⚠️ Fiche enregistrée sans liaison de profil (peut être liée ultérieurement).';
+      } else if (isNaN(num_choice) && /^[A-Za-z0-9][A-Za-z0-9-]{2,19}$/.test(raw_trimmed)) {
+        // Code écrit par la sage-femme sur le registre : profil existant, ou nouveau profil avec CE code
+        const typed_code = raw_trimmed.toUpperCase();
+        const existing = await get_patient_by_code_or_id(typed_code);
+        if (existing) {
+          chosen_patient_id = existing.id;
+          confirmation_text = `✅ Visite rattachée à la patiente ${existing.code} (code du registre).`;
+        } else {
+          const new_pat = await create_patient({ code: typed_code });
+          chosen_patient_id = new_pat.id;
+          confirmation_text = `✅ Nouveau profil créé avec le code du registre ${new_pat.code}.`;
+        }
       } else {
         append_messages(
           build_message('assistant', {
-            message_text: `❌ Choix non reconnu. Veuillez répondre par 1, 2, 3 ou tapez « annuler » :`,
+            message_text: `❌ Choix non reconnu. Répondez par un numéro, tapez le code écrit sur le registre (ex : PAT-482), ou « annuler » :`,
           })
         );
         return;
@@ -1763,12 +1897,7 @@ export const ChatScreen: React.FC = () => {
         return;
       }
       if (raw_trimmed === '2' || raw_trimmed.toLowerCase().includes('non') || raw_trimmed.toLowerCase().includes('terminer')) {
-        set_multipage_context(null);
-        append_messages(
-          build_message('assistant', {
-            message_text: '🎉 Livret clôturé avec succès et archivé localement. Prêt pour la prochaine consultation !',
-          })
-        );
+        return_to_main_menu('🎉 Livret clôturé et archivé localement. Prêt pour la prochaine consultation !');
         return;
       }
       append_messages(
@@ -1882,6 +2011,11 @@ export const ChatScreen: React.FC = () => {
       // Étape 1 : Sélection d'une patiente
       if (patient_browser_context.stage === 'select_patient') {
         const patients = patient_browser_context.cached_patients;
+        const current_page = patient_browser_context.patient_page ?? 0;
+        if (is_next_page_command(lower) || is_previous_page_command(lower)) {
+          await start_patient_browser_flow(current_page + (is_next_page_command(lower) ? 1 : -1));
+          return;
+        }
         const unlinked = await get_unlinked_records();
         const unlinked_opt_index = patients.length + 1;
 
@@ -1931,7 +2065,17 @@ export const ChatScreen: React.FC = () => {
       // Étape 2 : Sélection d'un document dans le dossier
       if (patient_browser_context.stage === 'select_document') {
         if (lower === 'retour' || lower === 'retour_patients' || lower.includes('patiente')) {
-          await start_patient_browser_flow();
+          await start_patient_browser_flow(patient_browser_context.patient_page ?? 0);
+          return;
+        }
+
+        if (is_next_page_command(lower) || is_previous_page_command(lower)) {
+          const target_page = (patient_browser_context.document_page ?? 0) + (is_next_page_command(lower) ? 1 : -1);
+          if (patient_browser_context.selected_patient) {
+            await show_patient_documents(patient_browser_context.selected_patient, patient_browser_context.cached_patients, target_page);
+          } else {
+            await show_unlinked_documents(patient_browser_context.cached_patients, target_page);
+          }
           return;
         }
 
@@ -1985,16 +2129,17 @@ export const ChatScreen: React.FC = () => {
         }
 
         if (lower === 'retour' || lower === 'retour_documents' || lower.includes('document')) {
+          const document_page = patient_browser_context.document_page ?? 0;
           if (patient_browser_context.selected_patient) {
-            await show_patient_documents(patient_browser_context.selected_patient, patient_browser_context.cached_patients);
+            await show_patient_documents(patient_browser_context.selected_patient, patient_browser_context.cached_patients, document_page);
           } else {
-            await show_unlinked_documents(patient_browser_context.cached_patients);
+            await show_unlinked_documents(patient_browser_context.cached_patients, document_page);
           }
           return;
         }
 
         if (lower === 'retour_patients' || lower.includes('changer')) {
-          await start_patient_browser_flow();
+          await start_patient_browser_flow(patient_browser_context.patient_page ?? 0);
           return;
         }
 
@@ -2029,8 +2174,7 @@ export const ChatScreen: React.FC = () => {
         }
 
         if (lower.includes('quitter') || lower.includes('fermer') || lower.includes('menu')) {
-          set_patient_browser_context(null);
-          append_messages(build_message('assistant', { message_text: '🏠 Retour au chat principal.' }));
+          return_to_main_menu();
           return;
         }
 
@@ -2128,8 +2272,9 @@ export const ChatScreen: React.FC = () => {
       lower_cmd === 'english' ||
       lower_cmd === 'french'
     ) {
+      // « french » contient « en » : on teste des mots entiers
       const target_lang: app_language =
-        lower_cmd.includes('en') || lower_cmd.includes('anglais') ? 'en' : 'fr';
+        /\b(en|english|anglais)\b/.test(lower_cmd) && !/fran|french/.test(lower_cmd) ? 'en' : 'fr';
       await save_stored_language(target_lang);
       set_current_language(target_lang);
       append_messages(
@@ -2180,26 +2325,12 @@ export const ChatScreen: React.FC = () => {
     ) {
       if (lower_cmd.includes('confirmer') || raw_trimmed === '__confirm_reset__') {
         await reset_database_and_history();
-        set_settings_flow_context(null);
-        set_editing_context(null);
-        set_patient_linking_context(null);
-        set_multipage_context(null);
-        set_manual_entry_context(null);
-        set_patient_browser_context(null);
-        set_active_question(null);
         set_pending_ai_count(0);
-        set_messages_list([
-          build_message('assistant', {
-            message_id: `msg_welcome_${Date.now()}`,
-            message_text:
-              current_language === 'en'
-                ? '✨ Database fully reset! All records, patients, and photos have been cleared.\n\n' +
-                  'You can now test the entire app from scratch (offline capture, sync, reconciliation).'
-                : '✨ Base de données 100% réinitialisée ! Tout l’historique, les patientes et les photos ont été effacés.\n\n' +
-                  'Vous pouvez maintenant tester l’application de zéro (capture hors ligne, retour réseau, vérification des doutes).',
-            quick_replies: get_main_quick_replies(current_language),
-          }),
-        ]);
+        return_to_main_menu(
+          current_language === 'en'
+            ? '✨ Database fully reset: all records, patients and photos have been cleared.'
+            : '✨ Base de données réinitialisée : historique, patientes et photos effacés.'
+        );
         return;
       }
 

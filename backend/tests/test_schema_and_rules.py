@@ -89,3 +89,11 @@ def test_consistency_flags_due_date_misread():
     apply_consistency_rules('p3_grossesse_actuelle', fields)
     assert fields['date_prevue_accouchement']['statut'] == 'a_reviser'
     assert 'DDR' in fields['date_prevue_accouchement']['raison']
+
+
+def test_dash_means_not_applicable():
+    from app.services.page_extraction import normalize_dash_fields
+
+    fields = {'visites.t3_9e_mois.rendez_vous': {'valeur': '–', 'confiance': 0.9, 'statut': 'connu'}}
+    normalize_dash_fields(fields)
+    assert fields['visites.t3_9e_mois.rendez_vous'] == {'valeur': None, 'confiance': 0.9, 'statut': 'non_applicable'}

@@ -217,6 +217,7 @@ def main() -> None:
     results: list[dict] = []
     page_type_results: list[tuple[str, Optional[str]]] = []
     models_used: dict[str, int] = defaultdict(int)
+    failed_pages: list[int] = []
 
     for page_number in parse_pages(args.pages):
         truth = truth_by_page[str(page_number)]
@@ -227,7 +228,7 @@ def main() -> None:
                 k: {**v, 'confiance': 1.0, 'valeur': (v['valeur'] or '').replace(missing_glyph_marker, 'e') or None}
                 for k, v in truth['champs'].items()
             }}
-        elif cache_path.exists() and not args.refresh:
+        elif cache_path.exists() and not args.refresh and 'erreur' not in json.loads(cache_path.read_text(encoding='utf-8')):
             prediction = json.loads(cache_path.read_text(encoding='utf-8'))
             # Les corrections du backend évoluent : on les réapplique sur le cache (gratuit, aucun appel Gemini)
             if 'champs' in prediction and prediction.get('page_type') in pages_by_type:
@@ -241,12 +242,15 @@ def main() -> None:
             print(f'page {page_number}: {image_path.name} ...')
             hint = truth['page_type'] if args.known_page_type else None
             prediction = asyncio.run(run_extraction(image_path, hint))
-            cache_path.write_text(json.dumps(prediction, ensure_ascii=False, indent=1), encoding='utf-8')
+            # Une erreur (quota épuisé...) n'est jamais mise en cache : la page sera réessayée à la prochaine relance
+            if 'erreur' not in prediction:
+                cache_path.write_text(json.dumps(prediction, ensure_ascii=False, indent=1), encoding='utf-8')
             if args.sleep:
                 time.sleep(args.sleep)
 
         if 'erreur' in prediction:
             print(f"page {page_number}: ERREUR {prediction['erreur']}")
+            failed_pages.append(page_number)
             continue
         if not args.known_page_type:
             page_type_results.append((truth['page_type'], prediction.get('page_type')))
@@ -264,9 +268,14 @@ def main() -> None:
                 'truth_value': truth_field['valeur'], 'predicted_value': predicted_field.get('valeur'),
             })
 
+    if failed_pages:
+        print(f'\n{len(failed_pages)} page(s) en échec, non évaluées (souvent le quota Gemini) : {failed_pages}')
+        print('Relancez la même commande plus tard : seules ces pages seront réessayées.\n')
     if not results:
         sys.exit('Aucun résultat à évaluer.')
     report = build_report(args.run_name, results, page_type_results, dict(models_used))
+    if failed_pages:
+        report += f'\n> {len(failed_pages)} page(s) non évaluée(s) (échec de l’appel IA) : {failed_pages}\n'
     (run_dir / 'rapport.md').write_text(report, encoding='utf-8')
     print(report)
     print(f'Rapport écrit dans {run_dir / "rapport.md"}')

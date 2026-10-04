@@ -13,6 +13,7 @@ from app.services.page_extraction import (
     extraction_prompt,
     flatten_extraction,
     normalize_checkbox_fields,
+    normalize_dash_fields,
     page_classification,
     response_model_for,
 )
@@ -252,6 +253,7 @@ async def extract_registry_from_image(
 
 def post_process_fields(page_type: str, fields: dict[str, dict]) -> dict[str, dict]:
     """Format des cases à cocher, puis doutes (valeurs invraisemblables, incohérences entre champs). Idempotent."""
+    fields = normalize_dash_fields(fields)
     fields = normalize_checkbox_fields(page_type, fields)
     fields = apply_plausibility_rules(page_type, fields)
     return apply_consistency_rules(page_type, fields)
